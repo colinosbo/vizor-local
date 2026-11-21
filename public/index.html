@@ -627,6 +627,7 @@ async function post(path, body, onError) {
 }
 
 // ---------- routing: #project/view/task ----------
+let hashIsDefault = false; // a project hash with no view or task: restore the last view once state loads
 function readHash() {
   const [p, v, t] = location.hash.slice(1).split('/').map((x) => decodeURIComponent(x || ''));
   if (!p || p === 'home') { view = 'home'; return; } // no hash opens Home
@@ -634,6 +635,7 @@ function readHash() {
   if (VIEWS.some(([k]) => k === v)) view = v;
   else if (view === 'home') view = 'overview';
   if (t) selTask = t;
+  hashIsDefault = !t && !VIEWS.some(([k]) => k === v);
 }
 function writeHash() {
   if (view === 'home') return history.replaceState(null, '', '#home');
@@ -641,13 +643,34 @@ function writeHash() {
   if (view === 'run' && selTask) parts.push(selTask);
   history.replaceState(null, '', '#' + parts.map(encodeURIComponent).join('/'));
 }
+const lastViewKey = (pid) => 'vizor.lastView.' + pid;
+function saveLastView(pid) {
+  if (!pid || view === 'home') return;
+  try { localStorage.setItem(lastViewKey(pid), JSON.stringify({ view, selTask })); } catch { /* storage unavailable */ }
+}
+// Returns the saved {view, selTask} only if it is still valid; a missing task falls back to the default view.
+function restoreLastView(pid) {
+  try {
+    const v = JSON.parse(localStorage.getItem(lastViewKey(pid)));
+    if (!v || !VIEWS.some(([k]) => k === v.view)) return null;
+    if (v.selTask != null && !state?.tasks?.some((t) => t.id === v.selTask && t.project_id === pid)) return null;
+    return { view: v.view, selTask: v.selTask ?? null };
+  } catch { return null; }
+}
 function go(patch) {
-  if ('current' in patch && patch.current !== current) { selNode = null; shipConfirm = null; }
+  if ('current' in patch && patch.current !== current) {
+    selNode = null; shipConfirm = null;
+    // Opening a project by default (no task, overview or no view) returns to where it was left; explicit targets win.
+    if (patch.selTask == null && (!('view' in patch) || patch.view === 'overview')) {
+      const last = restoreLastView(patch.current);
+      if (last) patch = { ...patch, ...last };
+    }
+  }
   if ('current' in patch) current = patch.current;
   if ('view' in patch && patch.view === 'ship' && view !== 'ship' && current) delete shipCache[current];
   if ('view' in patch) view = patch.view;
   if ('selTask' in patch) selTask = patch.selTask;
-  writeHash(); render();
+  saveLastView(current); writeHash(); render();
   if ('current' in patch && view === 'plan') $('thread').scrollTop = $('thread').scrollHeight;
 }
 
@@ -662,6 +685,11 @@ async function refresh() {
   }
   state = await r.json();
   if (!state.projects.some((p) => p.id === current)) current = state.projects[0]?.id ?? null;
+  if (hashIsDefault) {
+    hashIsDefault = false;
+    const last = current && restoreLastView(current);
+    if (last) { view = last.view; selTask = last.selTask; writeHash(); }
+  }
   render();
 }
 let pend; const soon = () => { clearTimeout(pend); pend = setTimeout(refresh, 150); };
