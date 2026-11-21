@@ -224,7 +224,7 @@
   .tcard .meta { display:flex; flex-wrap:wrap; gap:4px 12px; color:var(--muted); min-width:0; white-space:nowrap; }
   .tcard .act { font-size:12px; line-height:16px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
   .tcard .el { font-variant-numeric:tabular-nums; color:var(--text-2); }
-  .tcard .why { font-size:13px; line-height:18px; color:var(--text-2); overflow-wrap:anywhere; }
+  .tcard .cause { font-size:13px; line-height:18px; color:var(--text-2); overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
 
   /* Run */
   #v-run { display:grid; grid-template-columns:280px minmax(0,1fr); overflow:hidden; }
@@ -1342,6 +1342,7 @@ function taskCard(t) {
     since = sqlTime(ended || t.updated_at).getTime();
   }
   if (Number.isNaN(since)) since = null;
+  const held = t.status !== 'merged' && (t.status === 'blocked' || t.hold_reason) ? holdSummary(t) : null;
   return h('div', { class: 'tcard', role: 'button', tabindex: '0', onclick: () => go({ view: 'run', selTask: t.id }), onkeydown: (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); go({ view: 'run', selTask: t.id }); } } },
     h('div', { class: 'top' }, lamp(kind), h('span', { class: 'grow', style: 'font-weight:500; overflow-wrap:anywhere', text: t.title })),
     h('div', { class: 'meta mono' }, h('span', { class: 'ellipsis', text: t.key }),
@@ -1351,9 +1352,43 @@ function taskCard(t) {
       since ? h('span', { class: 'el', 'data-since': String(since), text: fmtClock(Date.now() - since) }) : null,
       t.merge_sha || t.head_sha ? h('span', { text: short(t.merge_sha || t.head_sha) }) : null),
     run ? h('div', { class: 'act mono', 'data-act': t.id, title: activity.get(t.id) || null, text: activity.get(t.id) || '' }) : null,
-    t.status === 'blocked' ? h('p', { class: 'why', text: holdText(t) }) : t.hold_reason && t.status !== 'merged' ? h('p', { class: 'why', text: t.hold_reason }) : null,
-    t.status === 'blocked' && !usageWaiting(t) ? h('div', {}, h('button', { class: 'btn', onclick: (e) => { e.stopPropagation(); retry(t); } }, icon('retry'), 'Retry')) : null,
+    held ? h('p', { class: 'cause', title: t.hold_reason || held.cause, text: held.cause }) : null,
+    held && held.action ? h('div', {}, h('button', { class: 'btn', onclick: (e) => { e.stopPropagation(); held.action.run(); } }, icon(held.action.icon), held.action.label)) : null,
     run ? h('div', {}, h('button', { class: 'btn ghost', onclick: (e) => { e.stopPropagation(); cancelRun(run); } }, icon('x'), 'Cancel run')) : null);
+}
+// A held task's short cause and its one fix. Patterns mirror the hold_reason strings written by src/runner.ts and src/plan.ts.
+function holdSummary(t) {
+  const raw = String(t.hold_reason || '').trim();
+  const openRun = { label: 'Open run', icon: 'run', run: () => go({ view: 'run', selTask: t.id }) };
+  const retryA = { label: 'Retry', icon: 'retry', run: () => retry(t) };
+  const reviewPlan = { label: 'Review plan', icon: 'plan', run: () => go({ view: 'plan' }) };
+  const pushNow = { label: 'Push now', icon: 'ship', run: pushAll };
+  if (t.usage_retry_at) return { cause: holdText(t), action: usageWaiting(t) ? openRun : retryA };
+  // Waiting on the runner itself, nothing for the owner to do
+  if (t.status !== 'blocked' && /^(waiting on |scope overlaps |forge unavailable)/.test(raw)) {
+    return { cause: raw.startsWith('waiting on') ? 'Waiting on other tasks' : raw.startsWith('scope') ? 'Waiting on an overlapping task' : 'GitHub unavailable, will retry', action: null };
+  }
+  const rules = [
+    [/^merge held:.*plan_not_approved/, 'Plan not approved', reviewPlan],
+    [/^merge held/, 'Merge held by a safety check', retryA],
+    [/^plan superseded/, 'Plan changed while running', reviewPlan],
+    [/^out-of-scope changes not published/, 'Changes outside task scope', reviewPlan],
+    [/^update produced out-of-scope/, 'Update touched files outside scope', openRun],
+    [/^conflict with /, 'Merge conflict with base branch', openRun],
+    [/^Claude account needs attention/, 'Claude sign-in needed', retryA],
+    [/^uncertain process state/, 'Interrupted by a restart', retryA],
+    [/^attempt cancelled by user/, 'Run cancelled', retryA],
+    [/^runner error/, 'Runner error', retryA],
+    [/^CI infrastructure kept failing/, 'CI infrastructure failing', retryA],
+    [/^CI still failing/, 'CI still failing after repairs', openRun],
+    [/^no new commit since CI failed|made no new commit; CI still failing/, 'Repair made no new commit', openRun],
+    [/^post-merge check/, 'Post-merge check failed', openRun],
+    [/^worker produced no changes/, 'Worker made no changes', openRun],
+    [/^worker exited/, 'Worker exited with an error', openRun],
+    [/push/i, 'Push to GitHub failed', pushNow],
+  ];
+  for (const [re, cause, action] of rules) if (re.test(raw)) return { cause, action };
+  return { cause: raw.split('\n')[0] || 'Held, no reason recorded', action: openRun };
 }
 async function retry(t) { if (await post(`/api/tasks/${encodeURIComponent(t.id)}/retry`)) { toast(`Retrying ${t.key}`); refresh(); } }
 async function cancelRun(a) { if (await post(`/api/attempts/${encodeURIComponent(a.id)}/cancel`)) toast('Cancel sent'); }
