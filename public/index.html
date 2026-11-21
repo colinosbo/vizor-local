@@ -223,6 +223,7 @@
   .tcard { display:flex; flex-direction:column; gap:8px; padding:12px; border-radius:4px; background:var(--card); border:1px solid var(--line); text-align:left; cursor:pointer; width:100%;
     transition:background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease); }
   .tcard:hover { background:var(--raised); border-color:var(--line-2); }
+  .tcard:focus-visible { outline:2px solid var(--accent); outline-offset:2px; background:var(--raised); border-color:var(--line-2); }
   .tcard .top { display:flex; align-items:flex-start; gap:8px; }
   .tcard .top .lamp { margin-top:6px; }
   .tcard .meta { display:flex; flex-wrap:wrap; gap:4px 12px; color:var(--muted); min-width:0; white-space:nowrap; }
@@ -716,7 +717,14 @@ function render() {
   if (shown === 'home') renderHome(entering);
   if (shown === 'overview') renderOverview();
   if (shown === 'plan') renderPlan();
-  if (shown === 'board') renderBoard();
+  if (shown === 'board') {
+    // Re-rendering replaces every card; keep keyboard focus on the same task.
+    const keep = document.activeElement?.closest?.('#v-board .tcard[data-task-id]')?.dataset.taskId;
+    renderBoard();
+    if (keep && !document.activeElement?.closest?.('.tcard')) {
+      [...$('v-board').querySelectorAll('.tcard[data-task-id]')].find((c) => c.dataset.taskId === keep)?.focus();
+    }
+  }
   if (shown === 'run') renderRun();
   if (shown === 'ship') renderShip();
   if (shown === 'projects') renderProjects();
@@ -1464,6 +1472,8 @@ function animateColumnChanges(pid, before) {
   taskCols.clear();
   for (const [id, col] of next) taskCols.set(id, col);
 }
+// A held task's summary, or null when the task is not held. Shared by the card and the r shortcut.
+const heldOf = (t) => (t && t.status !== 'merged' && (t.status === 'blocked' || t.hold_reason) ? holdSummary(t) : null);
 function taskCard(t) {
   const [, kind] = STATUS[t.status] || [];
   const attempts = state.attempts.filter((a) => a.task_id === t.id);
@@ -1476,7 +1486,7 @@ function taskCard(t) {
     since = sqlTime(ended || t.updated_at).getTime();
   }
   if (Number.isNaN(since)) since = null;
-  const held = t.status !== 'merged' && (t.status === 'blocked' || t.hold_reason) ? holdSummary(t) : null;
+  const held = heldOf(t);
   return h('div', { class: 'tcard', 'data-task': t.id, 'data-task-id': t.id, role: 'button', tabindex: '0', onclick: () => go({ view: 'run', selTask: t.id }), onkeydown: (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); go({ view: 'run', selTask: t.id }); } } },
     h('div', { class: 'top' }, lamp(kind), h('span', { class: 'grow', style: 'font-weight:500; overflow-wrap:anywhere', text: t.title })),
     h('div', { class: 'meta mono' }, h('span', { class: 'ellipsis', text: t.key }),
@@ -1740,10 +1750,63 @@ $('globalForm').onsubmit = async (e) => {
   e.preventDefault();
   if (await post('/api/settings/global', { globalMaxWorkers: Number($('gWorkers').value) })) { toast('Limit saved'); document.activeElement.blur(); refresh(); }
 };
+// Board shortcuts: one map from action to keys, so a command palette can render keycaps from it.
+const BOARD_KEYS = Object.freeze({
+  up: ['ArrowUp', 'k'], down: ['ArrowDown', 'j'], left: ['ArrowLeft'], right: ['ArrowRight'],
+  open: ['Enter'], retry: ['r'], back: ['Escape'],
+});
+const boardKeyAction = (key) => Object.keys(BOARD_KEYS).find((a) => BOARD_KEYS[a].includes(key)) ?? null;
+const boardCards = () => [...$('v-board').querySelectorAll('.tcard[data-task-id]')].filter((c) => c.offsetParent !== null);
+// Up/down stay in the column across lanes; left/right jump to the nearest card by height in the next column that has any.
+function moveBoardFocus(card, action) {
+  const cards = boardCards();
+  if (!card) return cards[0]?.focus();
+  if (action === 'up' || action === 'down') {
+    const same = cards.filter((c) => c.dataset.col === card.dataset.col);
+    return same[same.indexOf(card) + (action === 'down' ? 1 : -1)]?.focus();
+  }
+  const cols = COLUMNS.map(([label]) => label), step = action === 'right' ? 1 : -1;
+  const mid = (c) => { const r = c.getBoundingClientRect(); return r.top + r.height / 2; };
+  const y = mid(card);
+  for (let i = cols.indexOf(card.dataset.col) + step; i >= 0 && i < cols.length; i += step) {
+    const there = cards.filter((c) => c.dataset.col === cols[i]);
+    if (there.length) return there.reduce((a, b) => (Math.abs(mid(b) - y) < Math.abs(mid(a) - y) ? b : a)).focus();
+  }
+}
+// Returns true when the key was a board shortcut and has been handled.
+function boardKey(e) {
+  const action = boardKeyAction(e.key);
+  if (!action || e.defaultPrevented) return false;
+  if (document.querySelector('dialog[open], [aria-modal="true"]')) return false;
+  if (view === 'run') {
+    if (action !== 'back' || !selTask) return false;
+    const id = selTask;
+    e.preventDefault();
+    go({ view: 'board' });
+    $('v-board').querySelector(`.tcard[data-task-id="${CSS.escape(id)}"]`)?.focus();
+    return true;
+  }
+  if (view !== 'board' || $('v-board').hidden) return false;
+  const card = e.target.closest?.('.tcard[data-task-id]') ?? null;
+  // Only the card itself or an unfocused page; buttons and chips keep their own keys.
+  if (!card && e.target !== document.body) return false;
+  if (action === 'back') return false;
+  if (action === 'open' || action === 'retry') {
+    if (!card || e.repeat) return false;
+    e.preventDefault();
+    if (action === 'open') go({ view: 'run', selTask: card.dataset.taskId });
+    else { const held = heldOf(state.tasks.find((t) => t.id === card.dataset.taskId)); if (held?.action?.icon === 'retry') held.action.run(); }
+    return true;
+  }
+  e.preventDefault();
+  moveBoardFocus(card, action);
+  return true;
+}
 document.addEventListener('keydown', (e) => {
-  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable;
   if (e.key === 'Escape' && typing) return e.target.blur();
   if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (boardKey(e)) return;
   const i = Number(e.key);
   if (i >= 1 && i <= VIEWS.length) { e.preventDefault(); go({ view: VIEWS[i - 1][0] }); }
   if (e.key === '/' && proj()) { e.preventDefault(); go({ view: 'plan' }); $('chatIn').focus(); }
