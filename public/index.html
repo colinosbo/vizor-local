@@ -751,6 +751,7 @@ function planCanvas(p) {
         h('button', { class: 'btn ghost', onclick: () => go({ view: 'run', selTask: lt.id }) }, icon('run'), 'Open run'))] : null,
       h('dt', { text: 'Instructions' }), h('dd', { text: st.prompt }),
       h('dt', { text: 'Done when' }), h('dd', { text: st.acceptance }),
+      h('dt', { text: 'Model' }), h('dd', {}, h('span', { class: 'mono', text: st.model || 'sonnet' }), st.modelWhy ? h('span', { class: 't2', text: '  ' + st.modelWhy }) : null),
       h('dt', { text: 'May change' }), h('dd', { class: 'mono', text: st.writeScope.join('\n') }),
       h('dt', { text: 'Waits for' }), h('dd', { class: st.deps.length ? 'mono' : 'muted', text: st.deps.length ? st.deps.join(', ') : 'Nothing' })));
   }
@@ -1066,7 +1067,7 @@ function evText(e) {
     case 'worker_output': return d.text;
     case 'task_claimed': return `${d.kind} attempt claimed`;
     case 'task_ready': return '';
-    case 'worker_started': return `pid ${d.pid} · ${d.kind} · ${d.worker}`;
+    case 'worker_started': return `pid ${d.pid} · ${d.kind} · ${d.worker}${d.model ? ' · ' + d.model : ''}`;
     case 'worktree_ready': return `${d.path} · from ${short(d.baseSha)}`;
     case 'pr_published': return `PR #${d.pr} ${d.created ? 'opened' : 'updated'} at ${short(d.head)} · ${(d.files || []).join(', ')}`;
     case 'check_completed': return `${d.conclusion} on ${short(d.sha)} (check ${d.check})`;

@@ -11,7 +11,12 @@ export interface PlanTask {
   acceptance: string;
   writeScope: string[];   // globs, e.g. "src/history/**"
   deps: string[];         // keys of tasks that must merge first
+  model?: ModelChoice;    // which Claude model runs this task; absent = sonnet
+  modelWhy?: string;      // one short sentence from the planner
 }
+
+export type ModelChoice = 'opus' | 'sonnet';
+export const MODEL_CHOICES: ModelChoice[] = ['opus', 'sonnet'];
 
 export interface PlanBody {
   summary: string;
@@ -39,6 +44,8 @@ export interface TaskRow {
   repair_count: number; local_retry_count: number; infra_retry_count: number;
   pending_repair: string | null; last_session_id: string | null;
   usage_retry_at: number | null;  // UTC epoch ms for a provider quota hold
+  model?: ModelChoice | null;     // planner's pick for this task
+  model_why?: string | null;
 }
 
 export interface AttemptRow {

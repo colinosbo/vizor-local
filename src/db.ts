@@ -126,7 +126,7 @@ export function openDb(path: string): DB {
   db.exec(SCHEMA);
   ensureColumns(db, 'projects', { forge_origin: 'TEXT', ci_command: "TEXT NOT NULL DEFAULT 'node --test'", roadmap_paused: 'INTEGER NOT NULL DEFAULT 0',
     auto_push: 'INTEGER NOT NULL DEFAULT 0', auto_pushed_sha: 'TEXT', auto_push_error: 'TEXT' });
-  ensureColumns(db, 'tasks', { usage_retry_at: 'INTEGER' });
+  ensureColumns(db, 'tasks', { usage_retry_at: 'INTEGER', model: 'TEXT', model_why: 'TEXT' });
   return db;
 }
 

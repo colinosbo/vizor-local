@@ -2,7 +2,7 @@ import type { DB } from './db.js';
 import { tx } from './db.js';
 import { emit } from './events.js';
 import { scopesOverlap } from './scope.js';
-import type { PlanBody } from './types.js';
+import { MODEL_CHOICES, type PlanBody } from './types.js';
 
 export interface PlanValidation { errors: string[]; warnings: string[] }
 
@@ -20,6 +20,7 @@ export function validatePlan(body: PlanBody): PlanValidation {
     if (!Array.isArray(t.writeScope) || t.writeScope.length === 0) errors.push(`${t.key}: writeScope required`);
     for (const g of t.writeScope ?? []) if (g.startsWith('/') || g.includes('..') || g === '**') errors.push(`${t.key}: unsafe scope ${g}`);
     if (!Array.isArray(t.deps)) errors.push(`${t.key}: deps must be an array`);
+    if (t.model !== undefined && !MODEL_CHOICES.includes(t.model)) errors.push(`${t.key}: model must be one of ${MODEL_CHOICES.join(', ')}`);
   }
   for (const t of body.tasks) for (const d of t.deps ?? []) if (!keys.has(d)) errors.push(`${t.key}: missing dependency ${d}`);
 
@@ -79,11 +80,11 @@ export function approvePlan(db: DB, planId: number): void {
       db.prepare("UPDATE tasks SET status='blocked', hold_reason='plan superseded while in flight; owner decision needed', updated_at=datetime('now') WHERE plan_id=? AND status IN ('running','waiting_ci')").run(o.id);
     }
     db.prepare("UPDATE plans SET status='approved', approved_at=datetime('now') WHERE id=?").run(planId);
-    const ins = db.prepare(`INSERT INTO tasks(id, project_id, plan_id, key, title, prompt, acceptance, write_scope, deps, status, branch)
-      VALUES (?,?,?,?,?,?,?,?,?,'pending',?)`);
+    const ins = db.prepare(`INSERT INTO tasks(id, project_id, plan_id, key, title, prompt, acceptance, write_scope, deps, status, branch, model, model_why)
+      VALUES (?,?,?,?,?,?,?,?,?,'pending',?,?,?)`);
     for (const t of body.tasks) {
       const id = `${plan.project_id}-v${plan.version}-${t.key}`;
-      ins.run(id, plan.project_id, planId, t.key, t.title, t.prompt, t.acceptance, JSON.stringify(t.writeScope), JSON.stringify(t.deps), `local/${id}`);
+      ins.run(id, plan.project_id, planId, t.key, t.title, t.prompt, t.acceptance, JSON.stringify(t.writeScope), JSON.stringify(t.deps), `local/${id}`, t.model ?? null, t.modelWhy ? String(t.modelWhy).slice(0, 200) : null);
     }
     emit(db, { projectId: plan.project_id, type: 'plan_approved', data: { planId, version: plan.version, tasks: body.tasks.map((t) => t.key) } });
   });

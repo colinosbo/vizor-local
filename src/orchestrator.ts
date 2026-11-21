@@ -18,8 +18,9 @@ export const PLAN_SCHEMA = {
     reply: { type: 'string' },
     plan: { type: 'object', required: ['summary', 'tasks'], properties: {
       summary: { type: 'string' },
-      tasks: { type: 'array', items: { type: 'object', required: ['key', 'title', 'prompt', 'acceptance', 'writeScope', 'deps'], properties: {
+      tasks: { type: 'array', items: { type: 'object', required: ['key', 'title', 'prompt', 'acceptance', 'writeScope', 'deps', 'model', 'modelWhy'], properties: {
         key: { type: 'string' }, title: { type: 'string' }, prompt: { type: 'string' }, acceptance: { type: 'string' },
+        model: { type: 'string', enum: ['opus', 'sonnet'] }, modelWhy: { type: 'string' },
         writeScope: { type: 'array', items: { type: 'string' } }, deps: { type: 'array', items: { type: 'string' } } } } } } },
   },
 };
@@ -27,7 +28,11 @@ export const PLAN_SCHEMA = {
 export function plannerPrompt(project: Project, files: string, request: string): string {
   return `You are the orchestrator for the repository below. Draft a plan for the feature request.
 Split into small tasks with NON-overlapping writeScope globs when they can run in parallel; add deps when one task needs another merged first.
-Each task needs a kebab-case key, prompt, acceptance criteria, writeScope and deps. Never include secrets or CI/merge workflow files in scope.
+Each task needs a kebab-case key, prompt, acceptance criteria, writeScope, deps, model and modelWhy. Never include secrets or CI/merge workflow files in scope.
+Model: pick the Claude model that runs each task, and give modelWhy as one short sentence.
+- "opus" for work that needs real problem solving: new architecture or data models, tricky algorithms, concurrency or state machines, security-sensitive logic, cross-cutting refactors, debugging unclear failures.
+- "sonnet" for well-specified work: UI layout and styling, copy and docs, config, simple CRUD, renames, tests for existing behavior, small isolated edits.
+When unsure, pick "sonnet". A task whose CI fails is repaired on "opus" automatically, so do not pick opus just in case.
 
 How changes are verified: Local's trusted CI runs exactly this command in a clean checkout of each PR: ${project.ci_command}
 Write acceptance criteria that this command can check. Never tell workers to run \`node --test <directory>\` (a directory argument fails on Node 22+);

@@ -15,7 +15,7 @@ import { Runner } from '../src/runner.js';
 import { createTargetRepo, DEMO_PLAN, DEMO_SCENARIO } from '../src/sandbox.js';
 import { inScope, scopesOverlap } from '../src/scope.js';
 import { taskMarker, type Check, type PlanBody, type PullRequest, type TaskRow } from '../src/types.js';
-import { FakeWorkerFactory } from '../src/workers.js';
+import { FakeWorkerFactory, modelFor } from '../src/workers.js';
 import { claudeUsageRetryAt } from '../src/usage-limit.js';
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'local-test-'));
@@ -442,4 +442,23 @@ test('end-to-end demo passes (parallel workers, repair, stale update, dependency
   const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
   const out = execFileSync(process.execPath, ['--disable-warning=ExperimentalWarning', cli, 'demo'], { encoding: 'utf8', timeout: 150_000 });
   assert.match(out, /PASS/);
+});
+
+// ---------------- model routing ----------------
+test('planner model pick is validated, stored on the task, and repairs escalate to opus', () => {
+  assert.ok(validatePlan({ summary: '', tasks: [{ ...task('a', ['a/**']), model: 'gpt' as never }] }).errors.some((e) => /model must be/.test(e)));
+  const db = openDb(':memory:'); memProject(db);
+  approve(db, 'p', { summary: '', tasks: [
+    { ...task('hard', ['h/**']), model: 'opus', modelWhy: 'new state machine' },
+    { ...task('easy', ['e/**']), model: 'sonnet' },
+    task('unset', ['u/**']),
+  ] });
+  const rows = db.prepare('SELECT key, model, model_why FROM tasks ORDER BY key').all() as { key: string; model: string | null; model_why: string | null }[];
+  assert.deepEqual(rows.map((r) => [r.key, r.model]), [['easy', 'sonnet'], ['hard', 'opus'], ['unset', null]]);
+  assert.equal(rows.find((r) => r.key === 'hard')!.model_why, 'new state machine');
+  assert.equal(modelFor({ model: 'opus' }, 'initial'), 'opus');
+  assert.equal(modelFor({ model: 'sonnet' }, 'initial'), 'sonnet');
+  assert.equal(modelFor({ model: null }, 'initial'), 'sonnet', 'unset defaults to sonnet');
+  assert.equal(modelFor({ model: 'sonnet' }, 'repair'), 'opus', 'repair escalates');
+  assert.equal(modelFor({ model: 'sonnet' }, 'retry'), 'sonnet');
 });

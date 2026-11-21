@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import type { TaskRow } from './types.js';
+import type { ModelChoice, TaskRow } from './types.js';
 
 export interface WorkerEvent { kind: 'text' | 'tool' | 'command' | 'result' | 'stderr' | 'system'; text: string }
 
@@ -14,6 +14,7 @@ export interface WorkerContext {
   prompt: string;
   sessionId: string;              // persisted before launch
   resumeSessionId?: string;       // previous session to resume for repairs
+  model?: ModelChoice;            // Claude model alias for this attempt
   timeoutMs: number;
 }
 
@@ -24,6 +25,15 @@ export interface WorkerHandle {
   onEvent(cb: (e: WorkerEvent) => void): void;
   done: Promise<WorkerResult>;
   cancel(): void;
+}
+
+/**
+ * Which model runs an attempt. The planner picks per task (default sonnet).
+ * A repair means CI already failed once, so it escalates to opus.
+ */
+export function modelFor(task: Pick<TaskRow, 'model'>, kind: 'initial' | 'repair' | 'retry'): ModelChoice {
+  if (kind === 'repair') return 'opus';
+  return task.model === 'opus' ? 'opus' : 'sonnet';
 }
 
 export interface WorkerFactory { name: string; start(ctx: WorkerContext): WorkerHandle }
@@ -68,6 +78,7 @@ export class ClaudeCodeWorkerFactory implements WorkerFactory {
   start(ctx: WorkerContext): WorkerHandle {
     const args = ['-p', ctx.prompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits',
       '--allowedTools', ...this.allowedTools];
+    if (ctx.model) args.push('--model', ctx.model);
     if (ctx.resumeSessionId) args.push('--resume', ctx.resumeSessionId);
     else args.push('--session-id', ctx.sessionId);
     // Publisher secrets are stripped from the worker environment.

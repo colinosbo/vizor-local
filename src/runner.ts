@@ -8,7 +8,7 @@ import { allPaths, commitAll, ensureWorktree, hasUncommitted, push, revParse, ta
 import { evaluateMerge } from './merge.js';
 import { inScope, scopesOverlap } from './scope.js';
 import { DEFAULT_CI, IN_FLIGHT, REQUIRED_CHECK, TRUSTED_WORKFLOW, taskMarker, type AttemptRow, type Check, type Project, type TaskRow } from './types.js';
-import type { WorkerFactory, WorkerHandle } from './workers.js';
+import { modelFor, type WorkerFactory, type WorkerHandle } from './workers.js';
 import { claudeUsageRetryAt } from './usage-limit.js';
 
 export interface RunnerOpts {
@@ -352,13 +352,14 @@ export class Runner {
       this.setTask(t.id, { worktree: wt });
       this.ev(t, 'worktree_ready', { path: wt, branch: t.branch, created, baseSha }, attemptId);
       const n = (this.db.prepare('SELECT COUNT(*) AS n FROM attempts WHERE task_id=?').get(t.id) as { n: number }).n;
+      const model = modelFor(t, a.kind);
       const handle = this.workers.start({
-        task: t, attemptId, attemptNumber: n, kind: a.kind, worktree: wt, prompt: buildPrompt(t, a.kind, p.ci_command),
+        model, task: t, attemptId, attemptNumber: n, kind: a.kind, worktree: wt, prompt: buildPrompt(t, a.kind, p.ci_command),
         sessionId: a.session_id!, resumeSessionId: a.kind === 'repair' ? t.last_session_id ?? undefined : undefined, timeoutMs: this.o.timeoutMs,
       });
       this.handles.set(attemptId, handle);
       this.setAttempt(attemptId, { status: 'running', pid: handle.pid });
-      this.ev(t, 'worker_started', { pid: handle.pid, worker: this.workers.name, kind: a.kind }, attemptId);
+      this.ev(t, 'worker_started', { pid: handle.pid, worker: this.workers.name, kind: a.kind, model }, attemptId);
       handle.onEvent((e) => this.ev(t, 'worker_output', e, attemptId));
       const res = await handle.done;
       this.handles.delete(attemptId);
