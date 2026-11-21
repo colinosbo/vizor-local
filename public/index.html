@@ -42,7 +42,9 @@
 
   /* Sidebar */
   aside { background:var(--deep); border-right:1px solid var(--line); display:flex; flex-direction:column; gap:24px; padding:16px 12px; overflow:auto; height:100vh; }
-  .wordmark { display:flex; align-items:center; gap:8px; height:32px; padding:0 8px; font-size:16px; font-weight:500; }
+  .wordmark { display:flex; align-items:center; gap:8px; width:100%; height:32px; padding:0 8px; border:0; border-radius:8px; background:none; color:inherit; text-align:left; font-size:16px; font-weight:500; cursor:pointer;
+    transition:background-color var(--t-fast) var(--ease); }
+  .wordmark:hover { background:var(--card); }
   .wordmark .mark { width:12px; height:12px; border-radius:4px; background:var(--accent); }
   .side-label { display:flex; align-items:center; justify-content:space-between; font-size:12px; line-height:16px; color:var(--muted); padding:0 8px; margin-bottom:8px; }
   .stack { display:flex; flex-direction:column; gap:4px; }
@@ -293,6 +295,24 @@
   .attn .top .lamp { margin-top:6px; }
   .attn .why { font-size:13px; line-height:18px; color:var(--text-2); overflow-wrap:anywhere; }
 
+  /* Home: across-projects strip (same look as the header strip, read-only) and one card per project. */
+  .home-strip { margin:0 -8px; }
+  .sitem.static { cursor:default; }
+  .sitem.static:hover { background:none; border-color:transparent; color:var(--text-2); }
+  .home-strip .sitem .lbl { display:inline; }
+  .pgrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:16px; }
+  .pcard { position:relative; display:flex; flex-direction:column; gap:12px; padding:20px; min-width:0; transition:border-color var(--t-fast) var(--ease); }
+  .pcard:hover { border-color:var(--line-2); }
+  /* The full-card button sits behind the action: it paints over static text, the action lifts above it. */
+  .pcard-open { position:absolute; inset:0; border:0; border-radius:12px; background:none; cursor:pointer; }
+  .pcard .row { display:flex; align-items:center; gap:12px; min-width:0; }
+  .pcard .pname { font-size:15px; line-height:20px; font-weight:500; }
+  .pcard .pct { flex:none; width:40px; text-align:right; color:var(--text-2); }
+  .pcard .bar { flex:1; min-width:0; }
+  .pcard .act { position:relative; z-index:1; flex:none; }
+  .pcard.enter { animation:view-in var(--t-view) var(--ease) backwards; animation-delay:calc(var(--i) * 40ms); }
+  /* PLACEHOLDER: New project entry point and zero-projects state land in #homeNew (next task). */
+
   @media (max-width: 1100px) {
     body { grid-template-columns:220px minmax(0,1fr); }
     #v-plan { grid-template-columns:340px minmax(0,1fr); }
@@ -311,7 +331,8 @@
 </head>
 <body>
 <aside>
-  <div class="wordmark"><span class="mark"></span>Vizor Local</div>
+  <button class="wordmark" type="button" id="goHome" aria-label="Vizor Local, go to Home"><span class="mark"></span>Vizor Local</button>
+  <div class="stack" id="homeNav"></div>
   <div>
     <div class="side-label"><span>Projects</span></div>
     <div class="stack" id="projectList"></div>
@@ -332,6 +353,20 @@
     <span class="path mono ellipsis grow" id="hPath"></span>
     <div class="strip" id="strip" role="group" aria-label="Project status" hidden></div>
   </header>
+
+  <section class="view pad" id="v-home" hidden>
+    <div class="ov">
+      <div class="ov-head"><h1>Home</h1></div>
+      <div class="strip home-strip" role="group" aria-label="Across projects">
+        <span class="sitem static"><span class="lamp live" id="hsLamp" hidden></span><span class="num" id="hsBusy"></span><span class="num" id="hsLimit"></span><span class="lbl">workers busy</span></span>
+        <span class="sitem static" id="hsNeedBox"><span class="num" id="hsNeed"></span><span class="lbl">needs you</span></span>
+        <span class="sitem static"><span class="num" id="hsPush"></span><span class="lbl">unpushed</span></span>
+      </div>
+      <div class="pgrid" id="homeGrid"></div>
+      <!-- PLACEHOLDER: New project entry point and zero-projects state (next task fills #homeNew) -->
+      <div id="homeNew"></div>
+    </div>
+  </section>
 
   <section class="view pad" id="v-none" hidden>
     <div class="empty">
@@ -431,6 +466,7 @@ const h = (tag, props, ...kids) => {
 const put = (node, ...kids) => node.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
 const NS = 'http://www.w3.org/2000/svg';
 const ICONS = { // lucide paths (constant strings)
+  home: '<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   plan: '<path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/>',
   overview: '<rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/>',
   board: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M8 7v7"/><path d="M12 7v4"/><path d="M16 7v9"/>',
@@ -453,7 +489,7 @@ const STATUS = {
 };
 let state = { projects: [], plans: [], tasks: [], attempts: [], messages: [], settings: [], planning: [] };
 const events = [];
-let current = null, view = 'overview', selTask = null, selNode = null, settingsFor = null;
+let current = null, view = 'home', selTask = null, selNode = null, settingsFor = null;
 const selPlan = {}, dismissed = new Set();
 const drafts = new Map();
 let draftProjectId = null;
@@ -523,11 +559,14 @@ async function post(path, body) {
 // ---------- routing: #project/view/task ----------
 function readHash() {
   const [p, v, t] = location.hash.slice(1).split('/').map((x) => decodeURIComponent(x || ''));
-  if (p) current = p;
+  if (!p || p === 'home') { view = 'home'; return; } // no hash opens Home
+  current = p;
   if (VIEWS.some(([k]) => k === v)) view = v;
+  else if (view === 'home') view = 'overview';
   if (t) selTask = t;
 }
 function writeHash() {
+  if (view === 'home') return history.replaceState(null, '', '#home');
   const parts = [current || '', view];
   if (view === 'run' && selTask) parts.push(selTask);
   history.replaceState(null, '', '#' + parts.map(encodeURIComponent).join('/'));
@@ -571,9 +610,12 @@ function enterView(section) {
 function render() {
   showProjectDrafts(proj());
   renderSide(); renderHeader();
-  const shown = !proj() && view !== 'projects' ? 'none' : view;
+  const shown = view === 'home' ? 'home' : !proj() && view !== 'projects' ? 'none' : view;
   for (const s of document.querySelectorAll('main > section')) s.hidden = s.id !== 'v-' + shown;
-  if (shown !== shownView) { shownView = shown; enterView($('v-' + shown)); }
+  const entering = shown !== shownView;
+  // Home animates its cards instead of fading the whole section, so the two don't stack.
+  if (entering) { shownView = shown; if (shown !== 'home') enterView($('v-' + shown)); }
+  if (shown === 'home') renderHome(entering);
   if (shown === 'overview') renderOverview();
   if (shown === 'plan') renderPlan();
   if (shown === 'board') renderBoard();
@@ -591,12 +633,13 @@ function warnExtraPrimaries(shown) {
 function renderSide() {
   const button = (p) => {
     const [status, kind] = projectStatus(p), st = projectStats(p);
-    return h('button', { class: 'nav proj', 'aria-current': String(p.id === current), title: p.repo_path,
-      onclick: () => go({ current: p.id, view: view === 'projects' ? 'overview' : view, selTask: null }) },
+    return h('button', { class: 'nav proj', 'aria-current': String(p.id === current && view !== 'home'), title: p.repo_path,
+      onclick: () => go({ current: p.id, view: view === 'projects' || view === 'home' ? 'overview' : view, selTask: null }) },
       lamp(kind), h('span', { class: 'grow pname' }, h('span', { class: 'ellipsis', text: p.name }),
         status ? h('span', { class: 'mono muted', text: status }) : null),
       st.total ? h('span', { class: 'mono muted', title: `${st.c.merged} of ${st.total} tasks merged`, text: st.pct + '%' }) : null);
   };
+  put($('homeNav'), h('button', { class: 'nav', 'aria-current': String(view === 'home'), onclick: () => go({ view: 'home' }) }, icon('home'), h('span', { class: 'grow', text: 'Home' })));
   put($('projectList'), state.projects.map(button),
     h('button', { class: 'nav', onclick: () => { go({ view: 'projects' }); $('aPath').focus(); } },
       icon('plus'), h('span', { class: 'grow', text: 'Add project' })));
@@ -608,11 +651,67 @@ function renderSide() {
 }
 
 function renderHeader() {
-  const p = proj();
+  const p = view === 'home' ? null : proj();
   $('hTitle').textContent = p ? p.name : 'Vizor Local';
   $('hPath').textContent = p ? p.repo_path : '';
   $('strip').hidden = !p;
   if (p) renderStrip(statusFromState(state, p.id));
+}
+
+// ----- Home: across-projects strip and one card per project, all from /api/state -----
+const relTime = (ms, now = Date.now()) => {
+  const m = Math.floor(Math.max(0, now - ms) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} min ago`;
+  const hr = Math.floor(m / 60);
+  if (hr < 24) return `${hr} ${hr === 1 ? 'hour' : 'hours'} ago`;
+  const d = Math.floor(hr / 24);
+  return `${d} ${d === 1 ? 'day' : 'days'} ago`;
+};
+function lastActivity(pid) {
+  const ts = tasksOf(pid), ids = new Set(ts.map((t) => t.id));
+  const stamps = [...ts.map((t) => t.updated_at), ...state.attempts.filter((a) => ids.has(a.task_id)).map((a) => a.started_at),
+    ...state.messages.filter((m) => m.project_id === pid).map((m) => m.created_at)]
+    .filter(Boolean).map((s) => sqlTime(s).getTime()).filter((n) => !Number.isNaN(n));
+  return stamps.length ? Math.max(...stamps) : null;
+}
+// First match wins; the action follows the same state so the card never offers two things.
+function homeCard(p, i, animate) {
+  const st = statusFromState(state, p.id), held = tasksOf(p.id).filter((t) => t.status === 'blocked');
+  let text = 'Idle', kind = '', action = { label: 'Open', run: () => go({ current: p.id, view: 'overview', selTask: null }) };
+  if (p.paused) { text = 'Paused'; kind = 'wait'; }
+  else if (st.planWaits) { text = 'Review plan'; kind = 'wait'; action = { label: 'Review plan', run: () => go({ current: p.id, view: 'plan', selTask: null }) }; }
+  else if (st.held || st.pushErr) {
+    text = 'Needs you'; kind = 'bad';
+    if (held.length) action = { label: 'Retry held', run: () => retryMany(held) };
+  } else if (st.running > 0) { text = `Running ${st.running}`; kind = 'live'; }
+  const at = lastActivity(p.id);
+  const open = () => go({ current: p.id, view: 'overview', selTask: null });
+  const card = h('article', { class: 'card pcard' + (animate ? ' enter' : '') },
+    h('button', { class: 'pcard-open', type: 'button', 'aria-label': `Open ${p.name}`, onclick: open }),
+    h('div', { class: 'row' }, h('span', { class: 'pname ellipsis grow', text: p.name }),
+      h('span', { class: 'status' }, lamp(kind), text)),
+    h('div', { class: 'mono muted ellipsis', title: p.repo_path, text: p.repo_path }),
+    h('div', { class: 'row' }, segBar(tally(tasksOf(p.id).filter((t) => t.status !== 'cancelled'))), h('span', { class: 'pct mono', text: st.pct + '%' })),
+    h('div', { class: 'row' }, h('span', { class: 'mono muted grow', text: at == null ? 'No activity yet' : relTime(at) }),
+      h('button', { class: 'btn act', type: 'button', onclick: action.run, text: action.label })));
+  if (animate) card.style.setProperty('--i', i);
+  return card;
+}
+let homeEnter = false;
+function renderHome(entering) {
+  if (entering) homeEnter = !reducedMotion.matches;
+  const sts = state.projects.map((p) => statusFromState(state, p.id));
+  const busy = state.tasks.filter((t) => t.status === 'running').length;
+  const limit = Number(state.settings.find((s) => s.key === 'global_max_workers')?.value ?? 4);
+  countTo($('hsBusy'), busy); $('hsLimit').textContent = '/' + limit; $('hsLamp').hidden = !busy;
+  const need = sts.reduce((n, s) => n + s.needs, 0), push = sts.reduce((n, s) => n + s.unpushed, 0);
+  countTo($('hsNeed'), need); $('hsNeedBox').classList.toggle('attn', need > 0);
+  countTo($('hsPush'), push);
+  // Animate only the render that follows entering Home; it waits for data if the first render had no cards.
+  const animate = homeEnter && state.projects.length > 0;
+  put($('homeGrid'), state.projects.map((p, i) => homeCard(p, i, animate && i < 6)));
+  if (animate) homeEnter = false;
 }
 
 // ----- Status strip: every number comes from statusFromState(state), i.e. the /api/state payload -----
@@ -1379,6 +1478,7 @@ document.addEventListener('keydown', (e) => {
   if (i >= 1 && i <= VIEWS.length) { e.preventDefault(); go({ view: VIEWS[i - 1][0] }); }
   if (e.key === '/' && proj()) { e.preventDefault(); go({ view: 'plan' }); $('chatIn').focus(); }
 });
+$('goHome').addEventListener('click', () => go({ view: 'home' }));
 window.addEventListener('hashchange', () => { readHash(); render(); });
 window.addEventListener('resize', () => requestAnimationFrame(drawEdges));
 setInterval(() => { if (proj() && ['overview', 'board'].includes(view) && !document.hidden) render(); }, 30000);
