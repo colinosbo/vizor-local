@@ -230,6 +230,17 @@
   .tcard .el { font-variant-numeric:tabular-nums; color:var(--text-2); }
   .tcard .cause { font-size:13px; line-height:18px; color:var(--text-2); overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
 
+  /* Card detail popover: one shared element, never takes pointer events so the card underneath stays clickable. */
+  #tcPop { position:fixed; left:0; top:0; z-index:20; width:max-content; max-width:320px; padding:12px; border-radius:8px; background:var(--raised); border:1px solid var(--line-2);
+    font-size:12px; line-height:16px; display:flex; flex-direction:column; gap:12px; pointer-events:none; opacity:0; transition:opacity var(--t-menu) var(--ease); }
+  #tcPop.show { opacity:1; }
+  #tcPop[hidden] { display:none; }
+  #tcPop .pk { color:var(--muted); margin-bottom:4px; }
+  #tcPop .pv { display:flex; flex-direction:column; gap:4px; color:var(--text-2); }
+  #tcPop .pv .mono { overflow-wrap:anywhere; }
+  #tcPop .pv .status { gap:8px; min-width:0; }
+  #tcPop .pv .status .mono { color:var(--text); }
+
   /* Run */
   #v-run { display:grid; grid-template-columns:280px minmax(0,1fr); overflow:hidden; }
   .tlist { border-right:1px solid var(--line); overflow:auto; padding:16px 12px; display:flex; flex-direction:column; gap:4px; }
@@ -1342,7 +1353,7 @@ function renderBoard() {
   const lanes = boardLanes(plans, shown);
   const openTask = (t) => ({ role: 'button', tabindex: '0', onclick: () => go({ view: 'run', selTask: t.id }),
     onkeydown: (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); go({ view: 'run', selTask: t.id }); } } });
-  const mini = (t) => h('div', { class: 'tcard mini', ...openTask(t) }, lamp('ok'), h('span', { class: 'ttl', title: t.pr_number ? `${t.title} (PR #${t.pr_number})` : t.title, text: t.title }));
+  const mini = (t) => h('div', { class: 'tcard mini', 'data-task': t.id, ...openTask(t) }, lamp('ok'), h('span', { class: 'ttl', title: t.pr_number ? `${t.title} (PR #${t.pr_number})` : t.title, text: t.title }));
   put($('v-board'), header,
     h('div', { class: 'kanban' },
       COLUMNS.map(([label, states]) => {
@@ -1384,7 +1395,7 @@ function taskCard(t) {
   }
   if (Number.isNaN(since)) since = null;
   const held = t.status !== 'merged' && (t.status === 'blocked' || t.hold_reason) ? holdSummary(t) : null;
-  return h('div', { class: 'tcard', role: 'button', tabindex: '0', onclick: () => go({ view: 'run', selTask: t.id }), onkeydown: (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); go({ view: 'run', selTask: t.id }); } } },
+  return h('div', { class: 'tcard', 'data-task': t.id, role: 'button', tabindex: '0', onclick: () => go({ view: 'run', selTask: t.id }), onkeydown: (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); go({ view: 'run', selTask: t.id }); } } },
     h('div', { class: 'top' }, lamp(kind), h('span', { class: 'grow', style: 'font-weight:500; overflow-wrap:anywhere', text: t.title })),
     h('div', { class: 'meta mono' }, h('span', { class: 'ellipsis', text: t.key }),
       attempts.length ? h('span', { text: `attempt ${attempts.length}` }) : null,
@@ -1688,6 +1699,82 @@ es.onmessage = (m) => {
     if (view === 'ship' && e.project_id === current) loadShip(e.project_id, false); else delete shipCache[e.project_id];
   }
 };
+// ----- Card detail popover (Board) -----
+const CHECK_LABEL = { success: ['Passed', 'ok'], failure: ['Failed', 'bad'], infra_error: ['CI error', 'bad'], cancelled: ['Cancelled', ''] };
+const tcPop = h('div', { id: 'tcPop', role: 'tooltip', hidden: true });
+document.body.append(tcPop);
+let popCard = null, popTimer = 0;
+const jsonList = (s) => { try { const v = JSON.parse(s || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } };
+function lastCheck(t) {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.task_id === t.id && e.type === 'check_completed') {
+      const [label, kind] = CHECK_LABEL[e.d.conclusion] || [String(e.d.conclusion || '').replace(/_/g, ' '), 'wait'];
+      return h('span', { class: 'status' }, lamp(kind), label, e.d.sha ? h('span', { class: 'mono muted', text: short(e.d.sha) }) : null);
+    }
+  }
+  return t.status === 'waiting_ci' ? h('span', { class: 'status' }, lamp('wait'), 'Checks running') : h('span', { class: 'muted', text: 'No checks yet' });
+}
+function fillPop(t) {
+  const scope = jsonList(t.write_scope), deps = jsonList(t.deps);
+  const row = (label, ...body) => h('div', {}, h('div', { class: 'pk', text: label }), h('div', { class: 'pv' }, body));
+  put(tcPop,
+    row('Write scope', scope.length ? scope.map((g) => h('span', { class: 'mono', text: g })) : h('span', { class: 'muted', text: 'None' })),
+    row('Depends on', deps.length ? deps.map((k) => {
+      const d = state.tasks.find((x) => x.plan_id === t.plan_id && x.key === k);
+      return d ? h('span', { class: 'status' }, lamp((STATUS[d.status] || [])[1]), h('span', { class: 'mono ellipsis', text: k }), h('span', { class: 'muted', text: STATUS[d.status]?.[0] || d.status }))
+        : h('span', { class: 'mono', text: k });
+    }) : h('span', { class: 'muted', text: 'Nothing' })),
+    row('Last check', lastCheck(t)));
+}
+function hidePop() {
+  clearTimeout(popTimer);
+  popCard?.removeAttribute('aria-describedby');
+  popCard = null;
+  tcPop.classList.remove('show');
+  tcPop.hidden = true;
+}
+function showPop(card) {
+  const t = state.tasks.find((x) => x.id === card.dataset.task);
+  if (!t || !card.isConnected) return hidePop();
+  if (popCard && popCard !== card) popCard.removeAttribute('aria-describedby');
+  popCard = card;
+  card.setAttribute('aria-describedby', 'tcPop');
+  fillPop(t);
+  tcPop.hidden = false;
+  const r = card.getBoundingClientRect(), pw = tcPop.offsetWidth, ph = tcPop.offsetHeight, vw = innerWidth, vh = innerHeight, gap = 8;
+  // Right of the card, else left, else below it; always clamped inside the viewport.
+  let x = r.right + gap;
+  if (x + pw > vw - gap) x = r.left - gap - pw;
+  if (x < gap) x = Math.min(Math.max(r.left, gap), vw - gap - pw);
+  const y = Math.min(Math.max(r.top, gap), Math.max(gap, vh - gap - ph));
+  tcPop.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+  requestAnimationFrame(() => { if (popCard === card) tcPop.classList.add('show'); });
+}
+{
+  const board = $('v-board'), cardOf = (n) => (n instanceof Element ? n.closest('.tcard[data-task]') : null);
+  board.addEventListener('mouseover', (e) => {
+    const card = cardOf(e.target);
+    if (!card || card === cardOf(e.relatedTarget)) return;
+    clearTimeout(popTimer);
+    popTimer = setTimeout(() => showPop(card), 300);
+  });
+  board.addEventListener('mouseout', (e) => {
+    const card = cardOf(e.target);
+    if (!card || card === cardOf(e.relatedTarget)) return;
+    // Keyboard focus keeps its popover while the pointer wanders off.
+    if (card.contains(document.activeElement) && popCard === card) { clearTimeout(popTimer); return; }
+    hidePop();
+  });
+  board.addEventListener('focusin', (e) => { const card = cardOf(e.target); if (card) { clearTimeout(popTimer); showPop(card); } });
+  board.addEventListener('focusout', (e) => { if (cardOf(e.target) && !cardOf(e.relatedTarget)) hidePop(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !tcPop.hidden) hidePop(); });
+  addEventListener('scroll', () => { if (!tcPop.hidden) hidePop(); }, true);
+  addEventListener('resize', hidePop);
+  // Board re-renders replace every card: drop the popover when its card is gone.
+  new MutationObserver(() => { if (popCard && !popCard.isConnected) hidePop(); }).observe(board, { childList: true, subtree: true });
+}
+
 readHash();
 refresh();
 </script>
