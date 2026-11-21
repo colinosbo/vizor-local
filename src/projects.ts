@@ -66,7 +66,7 @@ export function addProject(db: DB, repoPath: string, opts: AddProjectOpts = {}):
 }
 
 /** Owner-only project settings. */
-export function configureProject(db: DB, id: string, c: { ciCommand?: string; maxWorkers?: number; forgeOrigin?: string | null }): Project {
+export function configureProject(db: DB, id: string, c: { ciCommand?: string; maxWorkers?: number; forgeOrigin?: string | null; autoPush?: boolean }): Project {
   const p = db.prepare('SELECT * FROM projects WHERE id=?').get(id) as unknown as Project | undefined;
   if (!p) throw new Error(`unknown project ${id}`);
   if (c.ciCommand !== undefined) {
@@ -79,6 +79,7 @@ export function configureProject(db: DB, id: string, c: { ciCommand?: string; ma
     resolveLocalOrigin({ id, repo_path: p.repo_path, forge_origin: c.forgeOrigin });
     db.prepare('UPDATE projects SET forge_origin=? WHERE id=?').run(c.forgeOrigin, id);
   }
+  if (c.autoPush !== undefined) db.prepare('UPDATE projects SET auto_push=?, auto_push_error=NULL WHERE id=?').run(c.autoPush ? 1 : 0, id);
   emit(db, { projectId: id, type: 'project_configured', data: c });
   return db.prepare('SELECT * FROM projects WHERE id=?').get(id) as unknown as Project;
 }

@@ -121,7 +121,8 @@ export class LocalForge implements Forge {
       delete env.NODE_TEST_CONTEXT; // CI must not inherit the host's test runner context
       const child = spawn(this.ciCommand, { cwd: dir, env, shell: true, detached: process.platform !== 'win32' });
       let log = `$ ${this.ciCommand}\n`, done = false, timedOut = false;
-      const timer = setTimeout(() => { timedOut = true; killTree(child); }, this.ciTimeoutMs);
+      // Finish on timeout directly: on Windows a leftover grandchild can hold the stdout pipe open, so 'close' may never fire.
+      const timer = setTimeout(() => { timedOut = true; killTree(child); end('failure', log + `\nCI timed out after ${Math.round(this.ciTimeoutMs / 1000)}s`); }, this.ciTimeoutMs);
       const end = (c: Check['conclusion'], l: string) => { if (done) return; done = true; clearTimeout(timer); finish(c, l); };
       child.stdout!.on('data', (d) => (log = (log + d).slice(-20000)));
       child.stderr!.on('data', (d) => (log = (log + d).slice(-20000)));

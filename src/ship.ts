@@ -49,16 +49,41 @@ export async function shipStatus(p: Project, opts: { fetch?: boolean } = {}): Pr
  * Owner-initiated push of exactly the commit they reviewed. Fast-forward only: never forces,
  * refuses if GitHub has commits Local has not seen, refuses if Local's main moved since review.
  */
-export async function pushToGithub(db: DB, p: Project, expectedSha: string): Promise<{ pushed: number; sha: string }> {
+export async function pushToGithub(db: DB, p: Project, expectedSha: string): Promise<{ pushed: number; sha: string; tag: string }> {
   const s = await shipStatus(p, { fetch: true });
   if (!s.remote) throw new Error('no GitHub repo connected for this project');
   if (s.fetchError) throw new Error('could not reach GitHub: ' + s.fetchError);
   if (!expectedSha || s.local !== expectedSha) throw new Error('main changed since you reviewed it; check again before pushing');
   if (s.behind > 0) throw new Error(`GitHub has ${s.behind} commit(s) Local does not have; not pushing (fast-forward only)`);
   if (s.aheadCount === 0) throw new Error('nothing to push; GitHub is up to date');
-  await gitA(p.repo_path, ['push', '--quiet', 'github', `${expectedSha}:refs/heads/${p.base_branch}`], 180_000);
-  emit(db, { projectId: p.id, type: 'pushed_to_github', data: { sha: expectedSha, commits: s.aheadCount, remote: s.remote } });
-  return { pushed: s.aheadCount, sha: expectedSha };
+  // An annotated tag carries what this push contains (plan summaries and merged tasks), so GitHub shows what was done.
+  const tag = 'vizor-' + new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-');
+  await gitA(p.repo_path, ['-c', 'user.name=Vizor Local', '-c', 'user.email=vizor-local@localhost', 'tag', '-a', tag, expectedSha, '-m', releaseNote(db, p)]);
+  await gitA(p.repo_path, ['push', '--quiet', 'github', `${expectedSha}:refs/heads/${p.base_branch}`, `refs/tags/${tag}`], 180_000);
+  emit(db, { projectId: p.id, type: 'pushed_to_github', data: { sha: expectedSha, commits: s.aheadCount, remote: s.remote, tag } });
+  return { pushed: s.aheadCount, sha: expectedSha, tag };
+}
+
+/** One-click push of everything merged so far. Same fast-forward-only rules as a reviewed push. */
+export async function pushNow(db: DB, p: Project) {
+  const s = await shipStatus(p, { fetch: true });
+  if (!s.remote) throw new Error('no GitHub repo connected for this project; connect one in Ship');
+  if (!s.local) throw new Error('nothing merged yet');
+  return pushToGithub(db, p, s.local);
+}
+
+/** What changed since the last push, from Vizor's own records: plan summaries and merged task titles. */
+export function releaseNote(db: DB, p: Project): string {
+  const last = (db.prepare("SELECT COALESCE(MAX(seq), 0) AS s FROM events WHERE project_id=? AND type='pushed_to_github'").get(p.id) as { s: number }).s;
+  const rows = db.prepare("SELECT t.title, t.pr_number, pl.version, pl.body FROM events e JOIN tasks t ON t.id=e.task_id JOIN plans pl ON pl.id=t.plan_id " +
+    "WHERE e.project_id=? AND e.type='task_merged' AND e.seq>? ORDER BY e.seq").all(p.id, last) as { title: string; pr_number: number | null; version: number; body: string }[];
+  const plans = new Map<number, { summary: string; items: string[] }>();
+  for (const r of rows) {
+    let g = plans.get(r.version);
+    if (!g) { let summary = ''; try { summary = JSON.parse(r.body).summary ?? ''; } catch { /* none */ } plans.set(r.version, (g = { summary, items: [] })); }
+    g.items.push(`- ${r.title}${r.pr_number ? ` (PR #${r.pr_number})` : ''}`);
+  }
+  return ['Pushed by Vizor Local', ...[...plans].map(([v, g]) => `\nPlan v${v}: ${g.summary}\n${g.items.join('\n')}`)].join('\n').slice(0, 8000);
 }
 
 export async function setGithubRemote(db: DB, p: Project, url: string) {

@@ -17,6 +17,9 @@ import { parseRoadmap, RoadmapService } from '../src/roadmap.js';
 import { Runner } from '../src/runner.js';
 import { createTargetRepo, DEMO_PLAN, DEMO_SCENARIO } from '../src/sandbox.js';
 import { pushToGithub, setGithubRemote, shipStatus } from '../src/ship.js';
+import { AutoPusher } from '../src/autopush.js';
+import { configureProject } from '../src/projects.js';
+import { emit } from '../src/events.js';
 import { syncCheckout } from '../src/sync.js';
 import type { Project } from '../src/types.js';
 import { FakeWorkerFactory } from '../src/workers.js';
@@ -171,6 +174,44 @@ test('push to GitHub: shows what is ahead, pushes the reviewed SHA fast-forward 
   assert.equal(s.behind, 1); assert.equal(s.canPush, false);
   await assert.rejects(pushToGithub(db, p, s.local!), /GitHub has 1 commit/);
   assert.notEqual(revParse(github, 'refs/heads/main'), s.local, 'GitHub was not overwritten');
+});
+
+test('auto-push: waits until every task merged, pushes once with a tag describing the work, records failures', async () => {
+  const root = tmp(), db = openDb(':memory:');
+  const { bare, checkout } = createTargetRepo(root);
+  const p = addProject(db, checkout, { name: 'demo' });
+  const github = join(root, 'github.git');
+  git(root, ['clone', '--quiet', '--bare', bare, github]);
+  git(checkout, ['remote', 'add', 'github', github]);
+  approvePlan(db, draftPlan(db, p.id, { summary: 'History and timer', tasks: [DEMO_PLAN.tasks[0], DEMO_PLAN.tasks[1]] }).planId);
+  landOnOrigin(root, bare, 'src/a.js', 'a\n');
+  const sha = revParse(bare, 'refs/heads/main')!;
+  const [t1, t2] = db.prepare('SELECT id FROM tasks WHERE project_id=? ORDER BY rowid').all(p.id) as { id: string }[];
+  db.prepare("UPDATE tasks SET status='merged', merge_sha=? WHERE id=?").run(sha, t1.id);
+  emit(db, { projectId: p.id, taskId: t1.id, type: 'task_merged' });
+  const ap = new AutoPusher(db);
+  const settle = async () => { for (let i = 0; i < 100 && (ap as any).busy.size; i++) await sleep(50); };
+
+  ap.tick(); await settle();
+  assert.notEqual(revParse(github, 'refs/heads/main'), sha, 'off by default');
+  configureProject(db, p.id, { autoPush: true });
+  ap.tick(); await settle();
+  assert.notEqual(revParse(github, 'refs/heads/main'), sha, 'waits while a task is still open');
+
+  db.prepare("UPDATE tasks SET status='merged', merge_sha=? WHERE id=?").run(sha, t2.id);
+  ap.tick(); await settle();
+  assert.equal(revParse(github, 'refs/heads/main'), sha);
+  const tag = git(github, ['tag', '--list', 'vizor-*']);
+  assert.match(git(github, ['tag', '-l', '--format=%(contents)', tag]), /Plan v1: History and timer[\s\S]*Activity history model/);
+  ap.tick(); await settle();
+  assert.equal(types(db).filter((t) => t === 'pushed_to_github').length, 1, 'same SHA is not pushed twice');
+
+  landOnOrigin(root, github, 'README.md', '# edited on github\n');
+  landOnOrigin(root, bare, 'src/b.js', 'b\n');
+  db.prepare("UPDATE tasks SET merge_sha=?, updated_at=datetime('now','+1 second') WHERE id=?").run(revParse(bare, 'refs/heads/main'), t2.id);
+  ap.tick(); await settle();
+  assert.match(proj(db, p.id).auto_push_error ?? '', /GitHub has 1 commit/);
+  assert.ok(types(db).includes('auto_push_failed'));
 });
 
 test('single instance: a second launch finds the running server', () => {

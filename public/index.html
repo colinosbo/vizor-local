@@ -296,6 +296,7 @@
     <span class="title" id="hTitle">Vizor Local</span>
     <span class="path mono ellipsis grow" id="hPath"></span>
     <span class="mono t2" id="hCap"></span>
+    <button class="btn" id="hPush" hidden></button>
     <button class="btn" id="hPause" hidden></button>
   </header>
 
@@ -352,6 +353,8 @@
           <h2 id="settingsTitle">Settings</h2>
           <label class="field"><span>Test command</span><input type="text" id="sCi" class="mono" spellcheck="false"><small>Runs in a clean checkout of every PR and after every merge</small></label>
           <label class="field"><span>Workers</span><input type="number" id="sWorkers" min="1" max="6"></label>
+          <label class="check"><input type="checkbox" id="sAutoPush">Push to GitHub when every task has merged</label>
+          <small class="muted" style="font-size:12px; line-height:16px; margin-top:-8px">Runs after each plan or roadmap phase finishes. Fast-forward only, never forces. Needs a GitHub repo connected in Ship</small>
           <div><button class="btn" type="submit">Save settings</button></div>
         </form>
         <form class="card form" id="addForm">
@@ -562,6 +565,8 @@ function renderHeader() {
   $('hCap').textContent = p ? running(p.id) + ' of ' + p.max_workers + ' workers' : '';
   if (!p) return;
   put($('hPause'), icon(p.paused ? 'play' : 'pause'), p.paused ? 'Resume dispatch' : 'Pause dispatch');
+  $('hPush').hidden = false;
+  if (!pushing) put($('hPush'), icon('ship'), 'Push to GitHub');
 }
 
 // ----- Plan -----
@@ -870,7 +875,8 @@ async function retryMany(ts) {
 function renderOverview() {
   const p = proj(), ts = tasksOf(p.id).filter((t) => t.status !== 'cancelled');
   const { c, total, pct } = projectStats(p), [stText, stKind] = projectStatus(p);
-  const head = h('div', { class: 'ov-head' }, h('h1', { text: 'Overview' }), stText ? h('span', { class: 'status' }, lamp(stKind), stText) : null);
+  const head = h('div', { class: 'ov-head' }, h('h1', { text: 'Overview' }), stText ? h('span', { class: 'status' }, lamp(stKind), stText) : null,
+    h('span', { class: 'grow' }), h('span', { class: 'mono muted', text: p.auto_push ? 'Auto-push to GitHub on' : 'Auto-push off' }));
   if (!total) {
     const approval = needsApproval(p.id);
     return put($('v-overview'), h('div', { class: 'ov' }, head, h('div', { class: 'empty' },
@@ -908,6 +914,8 @@ function renderOverview() {
   const held = ts.filter((t) => t.status === 'blocked'), due = held.filter((t) => !usageWaiting(t));
   const approval = needsApproval(p.id) ? latestPlan(p.id) : null;
   const attn = [
+    p.auto_push_error ? h('div', { class: 'attn' }, h('div', { class: 'top' }, lamp('bad'), h('span', { class: 'grow', style: 'font-weight:500', text: 'Auto-push to GitHub failed' })),
+      h('p', { class: 'why', text: p.auto_push_error }), h('div', {}, h('button', { class: 'btn', onclick: pushAll }, icon('ship'), 'Push now'))) : null,
     approval ? h('div', { class: 'attn' }, h('div', { class: 'top' }, lamp('wait'), h('span', { class: 'grow', style: 'font-weight:500', text: `Plan v${approval.version} needs your approval` })),
       h('div', {}, h('button', { class: 'btn primary', onclick: () => go({ view: 'plan' }) }, 'Review plan'))) : null,
     ...held.map((t) => h('div', { class: 'attn' }, h('div', { class: 'top' }, lamp('bad'), h('span', { class: 'grow', style: 'font-weight:500; overflow-wrap:anywhere', text: t.title })),
@@ -1173,7 +1181,7 @@ function renderProjects() {
   if (p && (settingsFor !== p.id || !$('settingsForm').contains(document.activeElement))) {
     settingsFor = p.id;
     $('settingsTitle').textContent = `Settings for ${p.name}`;
-    $('sCi').value = p.ci_command; $('sWorkers').value = p.max_workers;
+    $('sCi').value = p.ci_command; $('sWorkers').value = p.max_workers; $('sAutoPush').checked = !!p.auto_push;
   }
   if (document.activeElement !== $('gWorkers')) $('gWorkers').value = state.settings.find((s) => s.key === 'global_max_workers')?.value ?? 4;
 }
@@ -1203,13 +1211,23 @@ $('roadmapEditor').onsubmit = async (e) => {
 };
 $('roadmapCancel').onclick = () => { $('roadmapEditor').hidden = true; };
 $('goAdd').onclick = () => { go({ view: 'projects' }); $('aPath').focus(); };
+let pushing = false;
+async function pushAll() {
+  const p = proj(); if (!p || pushing) return;
+  pushing = true; $('hPush').disabled = true; put($('hPush'), icon('ship'), 'Pushing');
+  try {
+    const r = await post(`/api/projects/${p.id}/push-now`);
+    if (r) { toast(`Pushed ${r.pushed} commit${r.pushed === 1 ? '' : 's'} to GitHub, tagged ${r.tag}`); delete shipCache[p.id]; refresh(); }
+  } finally { pushing = false; $('hPush').disabled = false; renderHeader(); }
+}
+$('hPush').onclick = pushAll;
 $('hPause').onclick = async () => {
   const p = proj();
   if (p && await post(`/api/projects/${p.id}/pause`, { paused: !p.paused })) { toast(p.paused ? 'Dispatch resumed' : 'Dispatch paused. Running work continues'); refresh(); }
 };
 $('settingsForm').onsubmit = async (e) => {
   e.preventDefault(); const p = proj(); if (!p) return;
-  if (await post(`/api/projects/${p.id}/config`, { ciCommand: $('sCi').value, maxWorkers: Number($('sWorkers').value) })) { toast('Settings saved'); document.activeElement.blur(); refresh(); }
+  if (await post(`/api/projects/${p.id}/config`, { ciCommand: $('sCi').value, maxWorkers: Number($('sWorkers').value), autoPush: $('sAutoPush').checked })) { toast('Settings saved'); document.activeElement.blur(); refresh(); }
 };
 $('addForm').onsubmit = async (e) => {
   e.preventDefault();

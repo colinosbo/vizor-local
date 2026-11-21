@@ -64,7 +64,7 @@ function supervise(child: ChildProcess, timeoutMs: number, parse: (line: string)
  */
 export class ClaudeCodeWorkerFactory implements WorkerFactory {
   name = 'claude-code';
-  constructor(private bin = 'claude', private allowedTools = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash(npm test:*)', 'Bash(npm ci:*)', 'Bash(npm run:*)', 'Bash(node --test:*)', 'Bash(git status:*)', 'Bash(git diff:*)', 'Skill']) {}
+  constructor(private bin = 'claude', private allowedTools = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash(npm test:*)', 'Bash(npm ci:*)', 'Bash(npm run:*)', 'Bash(node --test:*)', 'Bash(node:*)', 'Bash(git status:*)', 'Bash(git diff:*)', 'Skill']) {}
   start(ctx: WorkerContext): WorkerHandle {
     const args = ['-p', ctx.prompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits',
       '--allowedTools', ...this.allowedTools];

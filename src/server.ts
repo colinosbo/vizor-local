@@ -10,7 +10,7 @@ import { approvePlan } from './plan.js';
 import type { PlanningService } from './planning.js';
 import { addProject, configureProject } from './projects.js';
 import type { RoadmapService } from './roadmap.js';
-import { pushToGithub, setGithubRemote, shipStatus } from './ship.js';
+import { pushNow, pushToGithub, setGithubRemote, shipStatus } from './ship.js';
 import { folderStatus, syncCheckout } from './sync.js';
 import type { Runner } from './runner.js';
 
@@ -147,7 +147,13 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
         }
         if (a === 'projects' && action === 'config') {
           return json(res, 200, configureProject(db, id, { ciCommand: body.ciCommand !== undefined ? String(body.ciCommand) : undefined,
-            maxWorkers: body.maxWorkers !== undefined ? Number(body.maxWorkers) : undefined }));
+            maxWorkers: body.maxWorkers !== undefined ? Number(body.maxWorkers) : undefined, autoPush: body.autoPush !== undefined ? !!body.autoPush : undefined }));
+        }
+        if (a === 'projects' && action === 'push-now') {
+          const p = runner.project(id) ?? fail('unknown project');
+          const r = await pushNow(db, p);
+          db.prepare('UPDATE projects SET auto_push_error=NULL WHERE id=?').run(p.id);
+          return json(res, 200, r);
         }
         if (a === 'projects' && action === 'push') return json(res, 200, await pushToGithub(db, runner.project(id) ?? fail('unknown project'), String(body.sha ?? '')));
         if (a === 'projects' && action === 'github') { await setGithubRemote(db, runner.project(id) ?? fail('unknown project'), String(body.url ?? '')); return json(res, 200, { ok: true }); }

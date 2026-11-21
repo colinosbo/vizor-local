@@ -10,6 +10,7 @@ import { approvePlan } from './plan.js';
 import { claimInstance, openBrowser, readRunning } from './instance.js';
 import { PlanningService } from './planning.js';
 import { RoadmapService } from './roadmap.js';
+import { AutoPusher } from './autopush.js';
 import { syncCheckout } from './sync.js';
 import { addProject, configureProject, findProjectForPath } from './projects.js';
 import type { Project } from './types.js';
@@ -127,6 +128,8 @@ async function serve() {
   const planning = new PlanningService(db, orch);
   const roadmap = new RoadmapService(db, planning);
   setInterval(() => { try { roadmap.tick(); } catch (e) { console.error('roadmap:', (e as Error).message); } }, 2000);
+  const autoPush = new AutoPusher(db);
+  setInterval(() => { try { autoPush.tick(); } catch (e) { console.error('auto-push:', (e as Error).message); } }, 15000);
   const s = await startServer(db, runner, planning, { port: Number(flag('port', '4317')), originsDir: join(dir, 'origins'), roadmap });
   claimInstance(dir, s.url);
   const projects = db.prepare('SELECT * FROM projects ORDER BY created_at').all() as unknown as Project[];

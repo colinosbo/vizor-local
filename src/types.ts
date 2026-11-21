@@ -22,6 +22,9 @@ export interface Project {
   id: string; name: string; repo_path: string; base_branch: string;
   max_workers: number; paused: number;
   forge_origin: string | null;  // bare repo acting as this project's forge; null = use the checkout's origin remote
+  auto_push?: number;            // 1 = push main to GitHub once every task has merged
+  auto_pushed_sha?: string | null; // last main SHA the auto-pusher handled (pushed or failed)
+  auto_push_error?: string | null;
   roadmap_paused: number;       // 1 = do not draft the next roadmap phase automatically
   ci_command: string;           // trusted CI command, run by the shell in a clean clone of the exact SHA
 }

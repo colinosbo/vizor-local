@@ -143,6 +143,9 @@ export class Runner {
       if (cur.status === 'waiting_ci') {
         const checks = forge.checksFor(cur.head_sha!).filter((c) => c.name === REQUIRED_CHECK && c.conclusion !== 'infra_error');
         if (checks.length && checks.every((c) => c.conclusion === 'success')) this.tryMerge(cur);
+        const all = forge.checksFor(cur.head_sha!);
+        if (all.length && all.every((c) => c.conclusion === 'failure')) // already handled, nothing new will run
+          this.block(cur, `no new commit since CI failed on ${cur.head_sha!.slice(0, 8)}; read the worker's last message in Run, then Retry`);
       }
     });
   }
@@ -413,6 +416,11 @@ export class Runner {
     const forge = this.f(t.project_id);
     push(wt, t.branch);
     const head = revParse(wt, 'HEAD')!;
+    if (a.kind !== 'initial' && t.pr_number && head === t.head_sha && forge.checksFor(head).every((c) => c.conclusion !== 'pending' && c.conclusion !== 'success')) {
+      // Same commit that already failed CI: no new check would run, so the task would sit in waiting_ci forever.
+      this.setAttempt(a.id, { status: 'succeeded', ended_at: 1 });
+      return this.block(t, `${a.kind} made no new commit; CI still failing on ${head.slice(0, 8)}. Read the worker's last message in Run, then Retry`);
+    }
     let pr = forge.findPrByMarker(taskMarker(t.id));
     const created = !pr;
     if (!pr) {

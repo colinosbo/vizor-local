@@ -124,7 +124,8 @@ export function openDb(path: string): DB {
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
   db.exec(SCHEMA);
-  ensureColumns(db, 'projects', { forge_origin: 'TEXT', ci_command: "TEXT NOT NULL DEFAULT 'node --test'", roadmap_paused: 'INTEGER NOT NULL DEFAULT 0' });
+  ensureColumns(db, 'projects', { forge_origin: 'TEXT', ci_command: "TEXT NOT NULL DEFAULT 'node --test'", roadmap_paused: 'INTEGER NOT NULL DEFAULT 0',
+    auto_push: 'INTEGER NOT NULL DEFAULT 0', auto_pushed_sha: 'TEXT', auto_push_error: 'TEXT' });
   ensureColumns(db, 'tasks', { usage_retry_at: 'INTEGER' });
   return db;
 }
