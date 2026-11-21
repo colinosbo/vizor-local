@@ -219,7 +219,7 @@
   .tcard.mini .lamp { margin-top:6px; }
   .tcard.mini .ttl { flex:1; min-width:0; color:var(--text-2); overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
   .cell .more { align-self:flex-start; }
-  .cell { display:flex; flex-direction:column; gap:8px; min-height:48px; padding:8px; border-radius:12px; background:var(--deep); border:1px solid var(--line); min-width:0; }
+  .cell { position:relative; display:flex; flex-direction:column; gap:8px; min-height:48px; padding:8px; border-radius:12px; background:var(--deep); border:1px solid var(--line); min-width:0; }
   .tcard { display:flex; flex-direction:column; gap:8px; padding:12px; border-radius:4px; background:var(--card); border:1px solid var(--line); text-align:left; cursor:pointer; width:100%;
     transition:background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease); }
   .tcard:hover { background:var(--raised); border-color:var(--line-2); }
@@ -354,6 +354,16 @@
   /* View change: fade in with a 6px rise. Added by enterView() only when the shown view changes. */
   @keyframes view-in { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
   .view.entering { animation:view-in var(--t-view) var(--ease); }
+
+  /* Board motion: only a card whose column changed moves. Opacity and transform only. */
+  @media (prefers-reduced-motion: no-preference) {
+    @keyframes col-in { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+    @keyframes col-out { from { opacity:1; } to { opacity:0; } }
+    @keyframes lamp-merge { 0% { transform:scale(1); opacity:.85; } 35% { transform:scale(1.7); opacity:1; } 100% { transform:scale(1); opacity:.85; } }
+    .tcard.col-in { animation:col-in 220ms ease-out; }
+    .tcard.ghost { position:absolute; margin:0; pointer-events:none; animation:col-out 150ms ease-out forwards; }
+    .lamp.pulse { animation:lamp-merge 600ms ease-out; }
+  }
 
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { transition:none !important; animation:none !important; scroll-behavior:auto !important; }
@@ -1337,12 +1347,14 @@ function renderBoard() {
     h('button', { class: 'btn', onclick: togglePause }, icon(p.paused ? 'play' : 'pause'), p.paused ? 'Resume dispatch' : 'Pause dispatch'),
     all.length ? h('span', { class: 'mono muted', text: `${c.merged} of ${all.length} merged · ${c.running} of ${p.max_workers} workers` }) : null);
   if (!all.length) {
+    forgetBoardColumns();
     const approval = needsApproval(p.id);
     const title = approval ? 'Plan ready for review' : planningFor(p.id) ? 'Drafting a plan' : plans.length ? 'No tasks' : 'No approved tasks yet';
     return put($('v-board'), header, h('div', { class: 'empty board-empty' }, h('h2', { text: title }),
       h('button', { class: 'btn', onclick: () => go({ view: 'plan' }) }, icon('plan'), approval ? 'Review plan' : 'Open plan')));
   }
   if (!shown.length) {
+    forgetBoardColumns();
     return put($('v-board'), header, h('div', { class: 'empty board-empty' }, h('h2', { text: `Nothing under ${fDef[1]}` }),
       h('button', { class: 'btn', onclick: () => {
         setBoardFilter(p.id, 'all');
@@ -1353,7 +1365,8 @@ function renderBoard() {
   const lanes = boardLanes(plans, shown);
   const openTask = (t) => ({ role: 'button', tabindex: '0', onclick: () => go({ view: 'run', selTask: t.id }),
     onkeydown: (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); go({ view: 'run', selTask: t.id }); } } });
-  const mini = (t) => h('div', { class: 'tcard mini', 'data-task': t.id, ...openTask(t) }, lamp('ok'), h('span', { class: 'ttl', title: t.pr_number ? `${t.title} (PR #${t.pr_number})` : t.title, text: t.title }));
+  const mini = (t) => h('div', { class: 'tcard mini', 'data-task': t.id, 'data-task-id': t.id, 'data-col': 'Merged', ...openTask(t) }, lamp('ok'), h('span', { class: 'ttl', title: t.pr_number ? `${t.title} (PR #${t.pr_number})` : t.title, text: t.title }));
+  const before = snapshotBoardCards(p.id);
   put($('v-board'), header,
     h('div', { class: 'kanban' },
       COLUMNS.map(([label, states]) => {
@@ -1373,14 +1386,55 @@ function renderBoard() {
           segBar(lc), h('span', { class: 'mono muted cnt', text: `${lc.merged} / ${lane.tasks.length}` })) : null,
           open ? COLUMNS.map(([label, states]) => {
             const ts = lane.tasks.filter((t) => states.includes(t.status));
-            if (label !== 'Merged') return h('div', { class: 'cell' }, ts.map(taskCard));
+            if (label !== 'Merged') return h('div', { class: 'cell', 'data-cell': lane.id + '|' + label }, ts.map((t) => { const card = taskCard(t); card.dataset.col = label; return card; }));
             ts.sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
             const every = mergedAll.has(lane.id), extra = ts.length - MERGED_CAP;
-            return h('div', { class: 'cell' }, (every ? ts : ts.slice(0, MERGED_CAP)).map(mini),
+            return h('div', { class: 'cell', 'data-cell': lane.id + '|' + label }, (every ? ts : ts.slice(0, MERGED_CAP)).map(mini),
               extra > 0 ? h('button', { class: 'btn ghost more', onclick: () => { if (every) mergedAll.delete(lane.id); else mergedAll.add(lane.id); renderBoard(); }, text: every ? 'Show fewer' : `Show ${extra} more` }) : null);
           }) : null,
         ];
       })));
+  animateColumnChanges(p.id, before);
+}
+// Column-change motion. taskCols remembers the column each task was last rendered in; the first render of a project animates nothing.
+const taskCols = new Map(), pulsedIds = new Set();
+let boardProject = null;
+function forgetBoardColumns() { taskCols.clear(); boardProject = null; }
+function snapshotBoardCards(pid) {
+  const before = new Map();
+  if (boardProject !== pid || reducedMotion.matches) return before;
+  for (const card of $('v-board').querySelectorAll('.tcard[data-task-id]')) {
+    const cell = card.closest('[data-cell]');
+    if (!cell) continue;
+    const r = card.getBoundingClientRect(), c = cell.getBoundingClientRect();
+    before.set(card.dataset.taskId, { clone: card.cloneNode(true), cell: cell.dataset.cell,
+      top: r.top - c.top - cell.clientTop, left: r.left - c.left - cell.clientLeft, width: r.width, height: r.height });
+  }
+  return before;
+}
+function animateColumnChanges(pid, before) {
+  const first = boardProject !== pid, still = reducedMotion.matches, next = new Map();
+  boardProject = pid;
+  for (const card of $('v-board').querySelectorAll('.tcard[data-task-id]')) {
+    const id = card.dataset.taskId, col = card.dataset.col, prev = taskCols.get(id);
+    next.set(id, col);
+    if (first || still || prev == null || prev === col) continue;
+    const old = before.get(id), cell = old && [...$('v-board').querySelectorAll('[data-cell]')].find((n) => n.dataset.cell === old.cell);
+    if (cell) {
+      const ghost = old.clone;
+      for (const a of ['data-task-id', 'data-task', 'tabindex', 'role']) ghost.removeAttribute(a);
+      ghost.setAttribute('aria-hidden', 'true');
+      ghost.classList.add('ghost');
+      Object.assign(ghost.style, { top: old.top + 'px', left: old.left + 'px', width: old.width + 'px', height: old.height + 'px' });
+      ghost.addEventListener('animationend', () => ghost.remove());
+      setTimeout(() => ghost.remove(), 400);
+      cell.append(ghost);
+    }
+    card.classList.add('col-in');
+    if (col === 'Merged' && !pulsedIds.has(id)) { pulsedIds.add(id); card.querySelector('.lamp')?.classList.add('pulse'); }
+  }
+  taskCols.clear();
+  for (const [id, col] of next) taskCols.set(id, col);
 }
 function taskCard(t) {
   const [, kind] = STATUS[t.status] || [];
@@ -1395,7 +1449,7 @@ function taskCard(t) {
   }
   if (Number.isNaN(since)) since = null;
   const held = t.status !== 'merged' && (t.status === 'blocked' || t.hold_reason) ? holdSummary(t) : null;
-  return h('div', { class: 'tcard', 'data-task': t.id, role: 'button', tabindex: '0', onclick: () => go({ view: 'run', selTask: t.id }), onkeydown: (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); go({ view: 'run', selTask: t.id }); } } },
+  return h('div', { class: 'tcard', 'data-task': t.id, 'data-task-id': t.id, role: 'button', tabindex: '0', onclick: () => go({ view: 'run', selTask: t.id }), onkeydown: (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); go({ view: 'run', selTask: t.id }); } } },
     h('div', { class: 'top' }, lamp(kind), h('span', { class: 'grow', style: 'font-weight:500; overflow-wrap:anywhere', text: t.title })),
     h('div', { class: 'meta mono' }, h('span', { class: 'ellipsis', text: t.key }),
       attempts.length ? h('span', { text: `attempt ${attempts.length}` }) : null,
