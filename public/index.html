@@ -66,6 +66,17 @@
   header { display:flex; align-items:center; gap:16px; padding:0 24px; border-bottom:1px solid var(--line); min-width:0; }
   header .title { font-size:15px; font-weight:500; white-space:nowrap; }
   header .path { color:var(--muted); }
+  /* Status strip: ghost buttons, mono figures. The lamp is the only looping thing, and only while workers run. */
+  .strip { display:flex; align-items:center; gap:4px; flex:none; }
+  .sitem { display:inline-flex; align-items:center; gap:8px; height:32px; padding:0 8px; border:1px solid transparent; border-radius:8px; background:none; color:var(--text-2); cursor:pointer; white-space:nowrap;
+    font-size:12px; line-height:16px; transition:background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+  .sitem:hover { background:var(--card); border-color:var(--line); color:var(--text); }
+  .sitem .lbl { color:var(--muted); }
+  .sitem .num { font-family:var(--mono); font-variant-numeric:tabular-nums; color:var(--text); }
+  .sitem.attn .num { color:var(--accent); }
+  .sitem .lamp.live { animation:lamp-run 1600ms var(--ease) infinite alternate; }
+  @keyframes lamp-run { from { opacity:1; } to { opacity:.45; } }
+  @media (max-width: 1100px) { .sitem .lbl { display:none; } }
   .view { min-height:0; overflow:auto; }
   .pad { padding:24px 32px; }
   h1 { font-size:20px; line-height:28px; font-weight:500; margin:0; }
@@ -319,9 +330,7 @@
   <header>
     <span class="title" id="hTitle">Vizor Local</span>
     <span class="path mono ellipsis grow" id="hPath"></span>
-    <span class="mono t2" id="hCap"></span>
-    <button class="btn" id="hPush" hidden></button>
-    <button class="btn" id="hPause" hidden></button>
+    <div class="strip" id="strip" role="group" aria-label="Project status" hidden></div>
   </header>
 
   <section class="view pad" id="v-none" hidden>
@@ -596,12 +605,92 @@ function renderHeader() {
   const p = proj();
   $('hTitle').textContent = p ? p.name : 'Vizor Local';
   $('hPath').textContent = p ? p.repo_path : '';
-  $('hPause').hidden = !p;
-  $('hCap').textContent = p ? running(p.id) + ' of ' + p.max_workers + ' workers' : '';
-  if (!p) return;
-  put($('hPause'), icon(p.paused ? 'play' : 'pause'), p.paused ? 'Resume dispatch' : 'Pause dispatch');
-  $('hPush').hidden = false;
-  if (!pushing) put($('hPush'), icon('ship'), 'Push to GitHub');
+  $('strip').hidden = !p;
+  if (p) renderStrip(statusFromState(state, p.id));
+}
+
+// ----- Status strip: every number comes from statusFromState(state), i.e. the /api/state payload -----
+// Pure: no DOM, no clock reads except through `now`. Unpushed counts merged tasks after the last auto-pushed
+// merge (/api/state has no push counter), so a manual push may leave it high until the next auto-push.
+function statusFromState(s, pid, now = Date.now()) {
+  const p = s.projects.find((x) => x.id === pid);
+  if (!p) return null;
+  const ts = s.tasks.filter((t) => t.project_id === pid && t.status !== 'cancelled');
+  const merged = ts.filter((t) => t.status === 'merged');
+  const plans = s.plans.filter((x) => x.project_id === pid).sort((a, b) => b.version - a.version);
+  const open = ts.filter((t) => t.status !== 'merged');
+  const held = ts.filter((t) => t.status === 'blocked').length;
+  const planWaits = plans[0]?.status === 'draft';
+  const pushErr = !!p.auto_push_error;
+  let eta = null;
+  const done = merged.map((t) => {
+    const starts = s.attempts.filter((a) => a.task_id === t.id).map((a) => Date.parse(String(a.started_at).replace(' ', 'T') + (String(a.started_at).endsWith('Z') ? '' : 'Z')));
+    return Date.parse(String(t.updated_at).replace(' ', 'T') + (String(t.updated_at).endsWith('Z') ? '' : 'Z')) - Math.min(...starts);
+  }).filter((x) => x >= 30000 && x <= 6 * 3600000).sort((a, b) => a - b);
+  if (open.length && done.length >= 3) {
+    const rounds = Math.ceil(open.length / Math.max(1, p.max_workers));
+    eta = now + rounds * done[Math.floor(done.length / 2)];
+  }
+  const sorted = [...merged].sort((a, b) => String(a.updated_at).localeCompare(String(b.updated_at)));
+  const at = p.auto_pushed_sha ? sorted.findIndex((t) => t.merge_sha === p.auto_pushed_sha) : -1;
+  const running = ts.filter((t) => t.status === 'running').length;
+  return {
+    pct: !ts.length ? 0 : merged.length === ts.length ? 100 : Math.floor((100 * merged.length) / ts.length),
+    running, limit: p.max_workers, eta,
+    needs: held + (planWaits ? 1 : 0) + (pushErr ? 1 : 0), held, planWaits, pushErr,
+    unpushed: at < 0 ? merged.length : merged.length - at - 1,
+  };
+}
+const stripEls = {};
+function countTo(el, to) {
+  const from = Number(el.dataset.v ?? to);
+  el.dataset.v = String(to);
+  cancelAnimationFrame(el._raf);
+  const fmt = (n) => String(Math.round(n));
+  if (reducedMotion.matches || from === to) { el.textContent = fmt(to); return; }
+  const t0 = performance.now(), dur = 320; // --t-view
+  // cubic-bezier(0.22, 1, 0.36, 1), solved for x by bisection
+  const ease = (x) => { let lo = 0, hi = 1; for (let i = 0; i < 20; i++) { const m = (lo + hi) / 2, bx = 3 * (1 - m) * (1 - m) * m * 0.22 + 3 * (1 - m) * m * m * 0.36 + m * m * m; if (bx < x) lo = m; else hi = m; } const m = (lo + hi) / 2; return 3 * (1 - m) * (1 - m) * m + m * m * m; };
+  const step = (now) => {
+    const k = Math.min(1, (now - t0) / dur);
+    el.textContent = fmt(from + (to - from) * ease(k));
+    if (k < 1) el._raf = requestAnimationFrame(step);
+  };
+  el._raf = requestAnimationFrame(step);
+}
+function renderStrip(st) {
+  if (!st) return;
+  const item = (key, label, nav) => {
+    if (stripEls[key]?.isConnected) return stripEls[key];
+    const num = h('span', { class: 'num' }), unit = h('span', { class: 'num' }), lbl = h('span', { class: 'lbl', text: label }), dot = h('span', { class: 'lamp live', hidden: true });
+    const b = h('button', { class: 'sitem', type: 'button', onclick: nav }, dot, num, unit, lbl);
+    b._p = { num, unit, dot, lbl }; stripEls[key] = b; return b;
+  };
+  const needsView = () => {
+    const s = statusFromState(state, current);
+    if (s.planWaits) return go({ view: 'plan' });
+    if (s.held) { go({ view: 'board' }); return requestAnimationFrame(() => $('v-board').querySelector('[data-col="Held"]')?.scrollIntoView({ block: 'center' })); }
+    if (s.pushErr) return go({ view: 'ship' });
+    go({ view: 'board' });
+  };
+  const pct = item('pct', 'done', () => go({ view: 'board' }));
+  const wk = item('wk', 'workers', () => go({ view: 'board' }));
+  const fin = item('fin', 'finish', () => go({ view: 'board' }));
+  const need = item('need', 'needs you', needsView);
+  const push = item('push', 'unpushed', () => go({ view: 'ship' }));
+  countTo(pct._p.num, st.pct); pct._p.unit.textContent = '%';
+  pct.setAttribute('aria-label', `${st.pct} percent of tasks merged, open board`);
+  countTo(wk._p.num, st.running); wk._p.unit.textContent = '/' + st.limit; wk._p.dot.hidden = !st.running;
+  wk.setAttribute('aria-label', `${st.running} of ${st.limit} workers running, open board`);
+  const finText = st.eta == null ? '—' : clockDay(st.eta);
+  fin._p.num.textContent = finText; fin._p.unit.textContent = '';
+  fin.setAttribute('aria-label', st.eta == null ? 'Estimated finish unknown, open board' : `Estimated finish ${finText}, open board`);
+  countTo(need._p.num, st.needs); need._p.unit.textContent = '';
+  need.classList.toggle('attn', st.needs > 0);
+  need.setAttribute('aria-label', `${st.needs} items need you, open the view that explains them`);
+  countTo(push._p.num, st.unpushed); push._p.unit.textContent = '';
+  push.setAttribute('aria-label', `${st.unpushed} commits not yet pushed to GitHub, open ship`);
+  if (!$('strip').firstChild) put($('strip'), pct, wk, fin, need, push);
 }
 
 // ----- Plan -----
@@ -1007,6 +1096,7 @@ function renderBoard() {
       }, text: label }))) : null;
   const c = tally(all);
   const header = h('div', { class: 'board-head' }, h('h1', { text: 'Board' }), seg, h('span', { class: 'grow' }),
+    h('button', { class: 'btn', onclick: togglePause }, icon(p.paused ? 'play' : 'pause'), p.paused ? 'Resume dispatch' : 'Pause dispatch'),
     all.length ? h('span', { class: 'mono muted', text: `${c.merged} of ${all.length} merged · ${c.running} of ${p.max_workers} workers` }) : null);
   if (!all.length) {
     const approval = needsApproval(p.id);
@@ -1022,7 +1112,7 @@ function renderBoard() {
     h('div', { class: 'kanban' },
       COLUMNS.map(([label, states]) => {
         const n = all.filter((t) => states.includes(t.status)).length;
-        return h('div', { class: 'khead' }, h('span', { text: label }),
+        return h('div', { class: 'khead', 'data-col': label }, h('span', { text: label }),
           h('span', { class: 'mono muted', title: label === 'Running' ? 'Running now / worker limit' : null, text: label === 'Running' ? `${n} / ${p.max_workers}` : String(n) }));
       }),
       lanes.map((lane) => {
@@ -1249,17 +1339,16 @@ $('goAdd').onclick = () => { go({ view: 'projects' }); $('aPath').focus(); };
 let pushing = false;
 async function pushAll() {
   const p = proj(); if (!p || pushing) return;
-  pushing = true; $('hPush').disabled = true; put($('hPush'), icon('ship'), 'Pushing');
+  pushing = true;
   try {
     const r = await post(`/api/projects/${p.id}/push-now`);
     if (r) { toast(`Pushed ${r.pushed} commit${r.pushed === 1 ? '' : 's'} to GitHub, tagged ${r.tag}`); delete shipCache[p.id]; refresh(); }
-  } finally { pushing = false; $('hPush').disabled = false; renderHeader(); }
+  } finally { pushing = false; }
 }
-$('hPush').onclick = pushAll;
-$('hPause').onclick = async () => {
+async function togglePause() {
   const p = proj();
   if (p && await post(`/api/projects/${p.id}/pause`, { paused: !p.paused })) { toast(p.paused ? 'Dispatch resumed' : 'Dispatch paused. Running work continues'); refresh(); }
-};
+}
 $('settingsForm').onsubmit = async (e) => {
   e.preventDefault(); const p = proj(); if (!p) return;
   if (await post(`/api/projects/${p.id}/config`, { ciCommand: $('sCi').value, maxWorkers: Number($('sWorkers').value), autoPush: $('sAutoPush').checked })) { toast('Settings saved'); document.activeElement.blur(); refresh(); }
