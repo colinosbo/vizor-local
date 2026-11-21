@@ -198,6 +198,10 @@
   .project-link .grow { text-overflow:ellipsis; overflow:hidden; }
   .board-head .seg { flex-wrap:wrap; }
   .seg.words button { font-family:var(--sans); font-size:13px; }
+  .seg .n { margin-left:6px; font:12px/1 var(--mono); font-variant-numeric:tabular-nums; color:var(--muted); }
+  .seg button[aria-pressed="true"] .n { color:var(--text-2); }
+  .board-head .filters { margin-left:4px; }
+  .board-empty .btn { margin-top:12px; }
   .kanban { display:grid; grid-template-columns:repeat(5, minmax(144px, 1fr)) minmax(144px, .85fr); gap:8px; align-items:stretch; min-width:860px; }
   .khead { position:sticky; top:0; z-index:1; display:flex; align-items:center; justify-content:space-between; height:32px; padding:0 12px;
     background:var(--page); border-bottom:1px solid var(--line-2); font-size:13px; color:var(--text-2); }
@@ -1264,6 +1268,27 @@ function renderOverview() {
 // ----- Board: status columns x swimlanes (by plan, by dependency wave, or none) -----
 const COLUMNS = [['Waiting', ['pending']], ['Ready', ['ready']], ['Running', ['running']], ['Checks', ['waiting_ci', 'merging']], ['Held', ['blocked']], ['Merged', ['merged']]];
 let boardGroup = 'plan';
+// Filter chips. Needs me = held cards (blocked, or a hold with a fix to offer); Merged today = merged since local midnight.
+const BOARD_FILTERS = [
+  ['all', 'All', () => true],
+  ['needs', 'Needs me', (t) => t.status === 'blocked' || (t.status !== 'merged' && !!t.hold_reason && !!holdSummary(t).action)],
+  ['running', 'Running', (t) => COLUMNS.find(([label]) => label === 'Running')[1].includes(t.status)],
+  ['today', 'Merged today', (t) => t.status === 'merged' && sqlTime(t.updated_at).toDateString() === new Date().toDateString()],
+];
+const boardFilters = new Map();
+const filterKey = (pid) => 'vizor.boardFilter.' + pid;
+function boardFilterOf(pid) {
+  if (!boardFilters.has(pid)) {
+    let v = null;
+    try { v = localStorage.getItem(filterKey(pid)); } catch { /* storage unavailable */ }
+    boardFilters.set(pid, BOARD_FILTERS.some(([k]) => k === v) ? v : 'all');
+  }
+  return boardFilters.get(pid);
+}
+function setBoardFilter(pid, key) {
+  boardFilters.set(pid, key);
+  try { localStorage.setItem(filterKey(pid), key); } catch { /* storage unavailable */ }
+}
 const laneOpen = new Map(), mergedAll = new Set();
 const MERGED_CAP = 4;
 function boardLanes(plans, all) {
@@ -1288,8 +1313,16 @@ function renderBoard() {
         renderBoard();
         $('v-board').querySelector('[aria-pressed="true"]')?.focus();
       }, text: label }))) : null;
-  const c = tally(all);
-  const header = h('div', { class: 'board-head' }, h('h1', { text: 'Board' }), seg, h('span', { class: 'grow' }),
+  const c = tally(all), fKey = boardFilterOf(p.id), fDef = BOARD_FILTERS.find(([k]) => k === fKey);
+  const shown = all.filter(fDef[2]);
+  const chips = all.length ? h('div', { class: 'seg words filters', role: 'group', 'aria-label': 'Filter tasks' },
+    BOARD_FILTERS.map(([key, label, test]) =>
+      h('button', { 'aria-pressed': String(fKey === key), onclick: () => {
+        setBoardFilter(p.id, key);
+        renderBoard();
+        $('v-board').querySelector('.filters [aria-pressed="true"]')?.focus();
+      } }, label, h('span', { class: 'n', text: String(key === 'all' ? all.length : all.filter(test).length) })))) : null;
+  const header = h('div', { class: 'board-head' }, h('h1', { text: 'Board' }), seg, chips, h('span', { class: 'grow' }),
     h('button', { class: 'btn', onclick: togglePause }, icon(p.paused ? 'play' : 'pause'), p.paused ? 'Resume dispatch' : 'Pause dispatch'),
     all.length ? h('span', { class: 'mono muted', text: `${c.merged} of ${all.length} merged · ${c.running} of ${p.max_workers} workers` }) : null);
   if (!all.length) {
@@ -1298,14 +1331,22 @@ function renderBoard() {
     return put($('v-board'), header, h('div', { class: 'empty board-empty' }, h('h2', { text: title }),
       h('button', { class: 'btn', onclick: () => go({ view: 'plan' }) }, icon('plan'), approval ? 'Review plan' : 'Open plan')));
   }
-  const lanes = boardLanes(plans, all);
+  if (!shown.length) {
+    return put($('v-board'), header, h('div', { class: 'empty board-empty' }, h('h2', { text: `Nothing under ${fDef[1]}` }),
+      h('button', { class: 'btn', onclick: () => {
+        setBoardFilter(p.id, 'all');
+        renderBoard();
+        $('v-board').querySelector('.filters [aria-pressed="true"]')?.focus();
+      } }, 'Show all')));
+  }
+  const lanes = boardLanes(plans, shown);
   const openTask = (t) => ({ role: 'button', tabindex: '0', onclick: () => go({ view: 'run', selTask: t.id }),
     onkeydown: (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); go({ view: 'run', selTask: t.id }); } } });
   const mini = (t) => h('div', { class: 'tcard mini', ...openTask(t) }, lamp('ok'), h('span', { class: 'ttl', title: t.pr_number ? `${t.title} (PR #${t.pr_number})` : t.title, text: t.title }));
   put($('v-board'), header,
     h('div', { class: 'kanban' },
       COLUMNS.map(([label, states]) => {
-        const n = all.filter((t) => states.includes(t.status)).length;
+        const n = shown.filter((t) => states.includes(t.status)).length;
         return h('div', { class: 'khead', 'data-col': label }, h('span', { text: label }),
           h('span', { class: 'mono muted', title: label === 'Running' ? 'Running now / worker limit' : null, text: label === 'Running' ? `${n} / ${p.max_workers}` : String(n) }));
       }),
