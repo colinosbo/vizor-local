@@ -222,6 +222,8 @@
   .tcard .top { display:flex; align-items:flex-start; gap:8px; }
   .tcard .top .lamp { margin-top:6px; }
   .tcard .meta { display:flex; flex-wrap:wrap; gap:4px 12px; color:var(--muted); min-width:0; white-space:nowrap; }
+  .tcard .act { font-size:12px; line-height:16px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+  .tcard .el { font-variant-numeric:tabular-nums; color:var(--text-2); }
   .tcard .why { font-size:13px; line-height:18px; color:var(--text-2); overflow-wrap:anywhere; }
 
   /* Run */
@@ -529,6 +531,7 @@ const STATUS = {
 };
 let state = { projects: [], plans: [], tasks: [], attempts: [], messages: [], settings: [], planning: [] };
 const events = [];
+const activity = new Map(); // task_id -> last worker_output line (kind text or tool)
 let current = null, view = 'home', selTask = null, selNode = null, settingsFor = null;
 const selPlan = {}, dismissed = new Set();
 const drafts = new Map();
@@ -1329,11 +1332,25 @@ function renderBoard() {
 }
 function taskCard(t) {
   const [, kind] = STATUS[t.status] || [];
-  const run = state.attempts.find((a) => a.task_id === t.id && a.status === 'running');
+  const attempts = state.attempts.filter((a) => a.task_id === t.id);
+  const run = attempts.find((a) => a.status === 'running');
+  // Running: the live attempt's start. Checks: when the last attempt ended (PR published), else last task update.
+  let since = null;
+  if (t.status === 'running' && run) since = sqlTime(run.started_at).getTime();
+  else if (t.status === 'waiting_ci' || t.status === 'merging') {
+    const ended = attempts.map((a) => a.ended_at).filter(Boolean).sort().pop();
+    since = sqlTime(ended || t.updated_at).getTime();
+  }
+  if (Number.isNaN(since)) since = null;
   return h('div', { class: 'tcard', role: 'button', tabindex: '0', onclick: () => go({ view: 'run', selTask: t.id }), onkeydown: (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); go({ view: 'run', selTask: t.id }); } } },
     h('div', { class: 'top' }, lamp(kind), h('span', { class: 'grow', style: 'font-weight:500; overflow-wrap:anywhere', text: t.title })),
-    h('div', { class: 'meta mono' }, h('span', { class: 'ellipsis', text: t.key }), t.pr_number ? h('span', { text: `#${t.pr_number}` }) : null,
-      t.merge_sha || t.head_sha ? h('span', { text: short(t.merge_sha || t.head_sha) }) : null, t.repair_count ? h('span', { text: `${t.repair_count} repair${t.repair_count > 1 ? 's' : ''}` }) : null),
+    h('div', { class: 'meta mono' }, h('span', { class: 'ellipsis', text: t.key }),
+      attempts.length ? h('span', { text: `attempt ${attempts.length}` }) : null,
+      t.repair_count > 0 ? h('span', { text: `${t.repair_count} repair${t.repair_count > 1 ? 's' : ''}` }) : null,
+      t.pr_number ? h('span', { text: `#${t.pr_number}` }) : null,
+      since ? h('span', { class: 'el', 'data-since': String(since), text: fmtClock(Date.now() - since) }) : null,
+      t.merge_sha || t.head_sha ? h('span', { text: short(t.merge_sha || t.head_sha) }) : null),
+    run ? h('div', { class: 'act mono', 'data-act': t.id, title: activity.get(t.id) || null, text: activity.get(t.id) || '' }) : null,
     t.status === 'blocked' ? h('p', { class: 'why', text: holdText(t) }) : t.hold_reason && t.status !== 'merged' ? h('p', { class: 'why', text: t.hold_reason }) : null,
     t.status === 'blocked' && !usageWaiting(t) ? h('div', {}, h('button', { class: 'btn', onclick: (e) => { e.stopPropagation(); retry(t); } }, icon('retry'), 'Retry')) : null,
     run ? h('div', {}, h('button', { class: 'btn ghost', onclick: (e) => { e.stopPropagation(); cancelRun(run); } }, icon('x'), 'Cancel run')) : null);
@@ -1566,6 +1583,13 @@ $('goHome').addEventListener('click', () => go({ view: 'home' }));
 window.addEventListener('hashchange', () => { readHash(); render(); });
 window.addEventListener('resize', () => requestAnimationFrame(drawEdges));
 setInterval(() => { if (proj() && ['overview', 'board'].includes(view) && !document.hidden) render(); }, 30000);
+// One timer updates every visible elapsed label in place; it does nothing when none are on screen.
+setInterval(() => {
+  const labels = document.querySelectorAll('.tcard .el[data-since]');
+  if (!labels.length || document.hidden) return;
+  const now = Date.now();
+  for (const el of labels) { const s = fmtClock(now - Number(el.dataset.since)); if (el.textContent !== s) el.textContent = s; }
+}, 1000);
 setInterval(() => { const c = $('clock'); if (c?.isConnected) c.textContent = fmtClock(Date.now() - Number(c.dataset.start)); }, 1000);
 
 // EventSource resends Last-Event-ID on reconnect; the server replays strictly after it.
@@ -1573,7 +1597,17 @@ const es = new EventSource('/api/events');
 es.onopen = () => { $('conn').className = 'conn on'; $('connText').textContent = 'Live'; };
 es.onerror = () => { $('conn').className = 'conn'; $('connText').textContent = 'Reconnecting'; };
 es.onmessage = (m) => {
-  const e = JSON.parse(m.data); try { e.d = JSON.parse(e.data); } catch { e.d = {}; } events.push(e); soon();
+  const e = JSON.parse(m.data); try { e.d = JSON.parse(e.data); } catch { e.d = {}; } events.push(e);
+  if (e.type === 'worker_output' && e.task_id && (e.d.kind === 'text' || e.d.kind === 'tool')) {
+    const line = String(evText(e) ?? '').replace(/\s+/g, ' ').trim();
+    if (line) {
+      activity.set(e.task_id, line);
+      for (const n of document.querySelectorAll('.tcard .act[data-act]')) if (n.dataset.act === e.task_id) { n.textContent = line; n.title = line; }
+      // On the board the line is patched in place; other views still refetch for the run log.
+      if (view === 'board') return;
+    }
+  }
+  soon();
   if (['task_merged', 'folder_synced', 'pushed_to_github'].includes(e.type) && shipCache[e.project_id] && Date.now() - (shipCache[e.project_id].at || 0) > 2000) {
     if (view === 'ship' && e.project_id === current) loadShip(e.project_id, false); else delete shipCache[e.project_id];
   }
