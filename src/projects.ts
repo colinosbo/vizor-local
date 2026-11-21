@@ -17,12 +17,16 @@ export interface AddProjectOpts {
   /** Create what is missing: `git init` + first commit if the folder is not a repo, and a local bare forge origin. */
   createOrigin?: boolean;
   originsDir?: string;
+  /** Create the project folder (recursively) when it does not exist yet. Requires createOrigin. */
+  createFolder?: boolean;
 }
 
 export const projectId = (name: string) => name.toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 30);
 
 /** Bind a local checkout. Verifies it is a git checkout with a usable forge origin and the base branch. */
 export function addProject(db: DB, repoPath: string, opts: AddProjectOpts = {}): Project {
+  if (opts.createFolder && !opts.createOrigin) throw new Error('createFolder requires createOrigin');
+  if (opts.createFolder && !existsSync(repoPath)) mkdirSync(repoPath, { recursive: true });
   if (!existsSync(repoPath)) throw new Error(`${repoPath} does not exist`);
   const path = canonicalPath(repoPath);
   const name = opts.name ?? basename(path);

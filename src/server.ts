@@ -129,7 +129,7 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
         const [, a, id, action] = parts;
         if (a === 'projects' && !id) {
           const p = addProject(db, String(body.path ?? ''), { maxWorkers: Number(body.maxWorkers ?? 1), ciCommand: body.ciCommand ? String(body.ciCommand) : undefined,
-            name: body.name ? String(body.name) : undefined, createOrigin: !!body.createOrigin, originsDir: opts.originsDir });
+            name: body.name ? String(body.name) : undefined, createOrigin: !!body.createOrigin, createFolder: !!body.createFolder, originsDir: opts.originsDir });
           return json(res, 200, p);
         }
         if (a === 'projects' && action === 'chat') {
