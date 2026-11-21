@@ -311,7 +311,21 @@
   .pcard .bar { flex:1; min-width:0; }
   .pcard .act { position:relative; z-index:1; flex:none; }
   .pcard.enter { animation:view-in var(--t-view) var(--ease) backwards; animation-delay:calc(var(--i) * 40ms); }
-  /* PLACEHOLDER: New project entry point and zero-projects state land in #homeNew (next task). */
+  /* Home: New project control and the first-launch start card. */
+  .ov.first { align-items:center; justify-content:center; min-height:calc(100vh - 160px); }
+  .ov.first #homeNew { width:100%; max-width:440px; display:flex; flex-direction:column; gap:16px; }
+  .start { display:flex; flex-direction:column; gap:16px; padding:24px; }
+  .start p { margin:0; color:var(--text-2); font-size:14px; line-height:20px; }
+  .start ol { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; }
+  .start li { display:flex; align-items:center; gap:12px; min-height:36px; border-top:1px solid var(--line); font-size:14px; }
+  .start li .mono { width:16px; color:var(--muted); }
+  .newp { max-width:520px; }
+  .ov.first .newp { max-width:none; }
+  .seg.words { align-self:flex-start; }
+  .np-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .np-err { flex-basis:100%; font-size:13px; line-height:18px; color:var(--neg); overflow-wrap:anywhere; }
+  .np-err:empty { display:none; }
+  @media (min-width:640px) { .np-err { flex-basis:0; flex:1; min-width:200px; } }
 
   @media (max-width: 1100px) {
     body { grid-template-columns:220px minmax(0,1fr); }
@@ -356,15 +370,41 @@
 
   <section class="view pad" id="v-home" hidden>
     <div class="ov">
-      <div class="ov-head"><h1>Home</h1></div>
-      <div class="strip home-strip" role="group" aria-label="Across projects">
+      <div class="ov-head" id="hHead"><h1>Home</h1></div>
+      <div class="strip home-strip" id="hStrip" role="group" aria-label="Across projects">
         <span class="sitem static"><span class="lamp live" id="hsLamp" hidden></span><span class="num" id="hsBusy"></span><span class="num" id="hsLimit"></span><span class="lbl">workers busy</span></span>
         <span class="sitem static" id="hsNeedBox"><span class="num" id="hsNeed"></span><span class="lbl">needs you</span></span>
         <span class="sitem static"><span class="num" id="hsPush"></span><span class="lbl">unpushed</span></span>
       </div>
       <div class="pgrid" id="homeGrid"></div>
-      <!-- PLACEHOLDER: New project entry point and zero-projects state (next task fills #homeNew) -->
-      <div id="homeNew"></div>
+      <div id="homeNew">
+        <div class="card start" id="npStart" hidden>
+          <h2>Vizor Local</h2>
+          <p>Vizor turns a description of what you want into a plan, runs workers on it and merges the results into your repo</p>
+          <ol>
+            <li><span class="mono">1</span>Add a project</li>
+            <li><span class="mono">2</span>Describe what to build</li>
+            <li><span class="mono">3</span>Approve the plan</li>
+          </ol>
+          <div><button class="btn primary" type="button" id="npFirst">Add your first project</button></div>
+        </div>
+        <div id="npMore" hidden><button class="btn primary" type="button" id="npOpen">New project</button></div>
+        <form class="card form newp" id="npForm" hidden>
+          <h2>New project</h2>
+          <div class="seg words" role="group" aria-label="Where the project lives">
+            <button type="button" id="npExisting" aria-pressed="true">Use an existing folder</button>
+            <button type="button" id="npEmpty" aria-pressed="false">Create a new empty project</button>
+          </div>
+          <label class="field"><span>Folder</span><input type="text" id="npPath" class="mono" spellcheck="false" required><small id="npHint"></small></label>
+          <label class="field"><span>Name</span><input type="text" id="npName" placeholder="Folder name"></label>
+          <label class="field"><span>Test command</span><input type="text" id="npCi" class="mono" value="npm test" placeholder="npm test" spellcheck="false"></label>
+          <div class="np-actions">
+            <button class="btn primary" type="submit" id="npSubmit">Add project</button>
+            <button class="btn ghost" type="button" id="npCancel">Cancel</button>
+            <span class="np-err" id="npErr" role="alert"></span>
+          </div>
+        </form>
+      </div>
     </div>
   </section>
 
@@ -547,13 +587,15 @@ function toast(text, bad) {
   const t = $('toast'); t.textContent = text; t.className = 'show' + (bad ? ' bad' : '');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.className = bad ? 'bad' : ''), bad ? 6000 : 3000);
 }
-async function post(path, body) {
+// onError(message) replaces the error toast when a caller shows the message itself.
+async function post(path, body, onError) {
+  const fail = (m) => { if (onError) onError(m); else toast(m, true); return null; };
   try {
     const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok) { toast(j.error || `Request failed (${r.status})`, true); return null; }
+    if (!r.ok) return fail(j.error || `Request failed (${r.status})`);
     return j;
-  } catch { toast('Local is not reachable', true); return null; }
+  } catch { return fail('Local is not reachable'); }
 }
 
 // ---------- routing: #project/view/task ----------
@@ -698,8 +740,50 @@ function homeCard(p, i, animate) {
   if (animate) card.style.setProperty('--i', i);
   return card;
 }
+// The form is static markup so SSE-driven renders never wipe what is being typed; render only flips visibility.
+let npOpen = false, npEmptyMode = false, npBusy = false;
+function renderNewProject() {
+  const first = state.projects.length === 0;
+  $('hHead').hidden = $('hStrip').hidden = $('homeGrid').hidden = first;
+  document.querySelector('#v-home .ov').classList.toggle('first', first);
+  $('npStart').hidden = !first;
+  $('npFirst').hidden = npOpen; // the open form's submit is then the only primary
+  $('npMore').hidden = first || npOpen;
+  $('npForm').hidden = !npOpen;
+  $('npExisting').setAttribute('aria-pressed', String(!npEmptyMode));
+  $('npEmpty').setAttribute('aria-pressed', String(npEmptyMode));
+  $('npSubmit').textContent = npEmptyMode ? 'Create project' : 'Add project';
+  $('npPath').placeholder = npEmptyMode ? 'C:\\Users\\you\\code\\new-app' : 'C:\\Users\\you\\code\\app';
+  $('npHint').textContent = npEmptyMode ? 'Local creates the folder, a git repository and a local origin' : 'A folder that already holds your code';
+}
+function openNewProject(on) {
+  npOpen = on; $('npErr').textContent = ''; renderNewProject();
+  if (on) $('npPath').focus();
+}
+function setNpMode(empty) { npEmptyMode = empty; $('npErr').textContent = ''; renderNewProject(); }
+$('npOpen').onclick = $('npFirst').onclick = () => openNewProject(true);
+$('npCancel').onclick = () => openNewProject(false);
+$('npExisting').onclick = () => setNpMode(false);
+$('npEmpty').onclick = () => setNpMode(true);
+$('npForm').onsubmit = async (e) => {
+  e.preventDefault();
+  if (npBusy) return;
+  npBusy = true; $('npSubmit').disabled = true; $('npErr').textContent = '';
+  try {
+    const body = { path: $('npPath').value.trim(), name: $('npName').value.trim() || undefined, ciCommand: $('npCi').value.trim(), maxWorkers: 2 };
+    if (npEmptyMode) Object.assign(body, { createOrigin: true, createFolder: true });
+    const r = await post('/api/projects', body, (m) => { $('npErr').textContent = m; });
+    if (!r) return; // inputs stay as typed
+    toast(`Added ${r.name}`);
+    $('npPath').value = ''; $('npName').value = ''; $('npCi').value = 'npm test';
+    npOpen = false; npEmptyMode = false;
+    await refresh();
+    go({ current: r.id, view: 'overview', selTask: null });
+  } finally { npBusy = false; $('npSubmit').disabled = false; }
+};
 let homeEnter = false;
 function renderHome(entering) {
+  renderNewProject();
   if (entering) homeEnter = !reducedMotion.matches;
   const sts = state.projects.map((p) => statusFromState(state, p.id));
   const busy = state.tasks.filter((t) => t.status === 'running').length;
