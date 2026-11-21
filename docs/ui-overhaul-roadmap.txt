@@ -1,0 +1,57 @@
+Phase 1: Status strip and one primary action per view
+Overhaul the shell of the Vizor Local dashboard (public/index.html, single file, no build step, no new dependencies). Use the unslop skill (read its SKILL.md and follow it): dark graphite surfaces, one orange accent, hairline borders, 400-500 weights, tabular mono numbers, lucide line icons only. Keep all untrusted text rendered with textContent only (the h() and put() helpers).
+1. Replace the header's right side with a compact status strip visible on every view: percent done, running/limit workers, estimated finish, a "needs you" count (held tasks, plan to review, auto-push error), and GitHub commits not yet pushed. Each item is clickable and jumps to the view that explains it.
+2. Each view gets at most one primary (orange) button: Plan = Draft plan or Approve, Board = none, Ship = Push. Everything else is secondary or ghost.
+3. Tighten density: 32px rows, 4px grid, no empty bands; the first screen of every view shows useful content without scrolling at 1280x800.
+4. Motion system, calm and smooth: one easing curve cubic-bezier(0.22, 1, 0.36, 1); 140ms for hover and press, 200ms for menus and popovers, 320ms for view changes. Switching views cross-fades with a 6px rise. Numbers in the status strip count up to their new value. Progress bars grow their width with a transition. Only opacity, transform, color and background animate (never layout properties like height or top). No bouncing, no looping motion except the running lamp. Everything is turned off under prefers-reduced-motion.
+Acceptance: npm test passes; no view has more than one .btn.primary visible at once; status strip numbers match /api/state; with reduced motion enabled no transition runs.
+Constraint: only public/index.html may change. Tasks that edit public/index.html must depend on each other so they never run in parallel.
+---
+Phase 2: Home screen and an obvious first step
+Use the unslop skill. Add a Home view that is where Vizor opens (public/index.html; route #home; src/server.ts only if a field is missing).
+1. Home lists every project as a card: name, folder, a progress bar with percent done, a status line (Running 2, Needs you, Review plan, Idle, Paused), the last activity time, and one action that matches its state (Open, Review plan, Retry held). Clicking a card opens that project's Overview.
+2. A clear "New project" card or button with two choices: use an existing folder, or create a new empty project (creates the folder, git repo and local origin through the existing POST /api/projects with createOrigin). Ask only for folder, name and test command; workers default to 2.
+3. First launch with no projects: Home shows a single centered start card that says what Vizor does in one sentence and walks through three numbered steps (add a project, describe what to build, approve the plan). The only primary button is "Add your first project".
+4. Above the cards, an across-projects strip: workers busy of the global limit, tasks needing you across all projects, and anything not yet pushed to GitHub.
+5. The sidebar gets a Home entry at the top; the wordmark also links to Home. Opening Vizor with no hash goes to Home; a hash link to a project still opens that project.
+6. Motion: project cards fade and rise in with a 40ms stagger (at most 6 cards animate, the rest appear at once); opening a project cross-fades into its Overview.
+Acceptance: npm test passes; with zero projects the only primary action is Add your first project; with projects, every card shows status and one matching action.
+Constraint: tasks that edit public/index.html must depend on each other.
+---
+Phase 3: Glanceable tasks
+Use the unslop skill. Make every task readable in one glance without opening it (public/index.html; src/server.ts only if a field is missing from /api/state).
+1. Task cards show: status lamp, title, elapsed time for Running and Checks, attempt number, repair count, PR number. Running cards show the worker's latest one-line activity (from the existing event stream, last worker_output of kind text or tool, truncated to one line).
+2. Held cards show the hold reason rewritten as a short cause plus one fix button where Vizor knows the fix (Retry, Open run, Review plan, Push now).
+3. Board filter chips: All, Needs me, Running, Merged today. The choice is remembered per project in localStorage (wrapped in try/catch).
+4. Hovering or focusing a card shows a small detail popover (write scope, deps and their states, last check result) without leaving the board.
+5. Motion: when a task changes column, its card fades out of the old column and fades and rises into the new one (no sliding across the board). A card that just merged shows a brief green lamp pulse once, then settles.
+Acceptance: npm test passes; a held task always shows its reason and an action; Running cards update live without a page reload.
+Constraint: tasks that edit public/index.html must depend on each other.
+---
+Phase 4: Keyboard and quality of life
+Use the unslop skill. Speed up everyday use (public/index.html only).
+1. Ctrl+K command palette: fuzzy search over projects, views, tasks and actions (Retry task, Push to GitHub, Pause dispatch, Approve plan, Add roadmap). Enter runs, Esc closes. Show small keycaps for shortcuts.
+2. Board keyboard navigation: arrow keys or j/k move focus between cards, Enter opens the run, r retries a held card, Esc returns.
+3. Opt-in desktop notifications (Notification API, asked only when the owner turns it on in Projects settings) for: plan ready for review, task held, all tasks merged, push failed. Never for routine progress.
+4. Remember the last view and selected task per project; reopening a project returns to where the owner left it.
+5. Copy buttons on PR numbers, SHAs, worktree paths and commands shown in logs.
+Acceptance: npm test passes; every action in the palette also exists as a button; notifications are off by default.
+Constraint: tasks that edit public/index.html must depend on each other.
+---
+Phase 5: First-run checklist and clear empty states
+Use the unslop skill. Help a new project get to its first merge without reading docs (public/index.html; src/server.ts only for read-only status fields).
+1. Per-project setup checklist on the Overview until complete: folder is a git repo, local origin exists, test command set and passing on main, GitHub connected, auto-push chosen, first plan approved. Each row has one button that does or opens the fix; the card disappears when all rows pass.
+2. Rewrite every empty state as: what this view shows, why it is empty, the one next action.
+3. Plain-language explanations for technical states (Checks, Verifying merge, Held, Superseded) via a small info popover, written in short sentences without jargon.
+Acceptance: npm test passes; a brand-new project shows the checklist; no empty state is a blank area.
+Constraint: tasks that edit public/index.html must depend on each other.
+---
+Phase 6: Accessibility, responsiveness and motion polish
+Use the unslop skill. Make Vizor usable by keyboard, screen reader and on a narrow window (public/index.html; add test/ui.test.ts).
+1. Visible focus ring on every interactive element; logical tab order; aria-live region announcing status changes (task held, merged, plan ready).
+2. Text and icon contrast at least 4.5:1 on all surfaces; status is never shown by color alone (lamp plus text label).
+3. Hit targets at least 40px tall at widths under 900px; layout stacks to one column down to 390px wide with the status strip, Needs you list and Board in reading order.
+4. Motion review across every view: one easing curve, durations only from the Phase 1 set, nothing animates on every 30s refresh unless its value changed, no layout jumps when live data arrives. prefers-reduced-motion removes all transitions; no looping animation except the running lamp.
+5. Add test/ui.test.ts: static checks on public/index.html that no innerHTML is assigned from data (only the constant icon map), every button has text or aria-label, and there is at most one .btn.primary per section in the markup.
+Acceptance: npm test passes including the new UI test.
+Constraint: tasks that edit public/index.html must depend on each other.
