@@ -360,7 +360,7 @@
         <h2 id="roadmapTitle">Add roadmap phases</h2>
         <p class="t2" style="font-size:13px">Separate phases with a line containing only <span class="mono">---</span>. The first line of each phase is its title. Vizor drafts phase 1 now, and each next phase after the previous one has merged. You approve every plan</p>
         <textarea id="roadmapText" rows="12" class="mono" spellcheck="false" placeholder="Phase 1: Data model&#10;Describe what this phase builds...&#10;---&#10;Phase 2: Logging screens&#10;..."></textarea>
-        <div style="display:flex; gap:8px"><button class="btn primary" type="submit">Add phases</button><button class="btn ghost" type="button" id="roadmapCancel">Cancel</button></div>
+        <div style="display:flex; gap:8px"><button class="btn" type="submit">Add phases</button><button class="btn ghost" type="button" id="roadmapCancel">Cancel</button></div>
       </form>
       <div class="canvas-body" id="canvas"></div>
     </div>
@@ -580,6 +580,12 @@ function render() {
   if (shown === 'run') renderRun();
   if (shown === 'ship') renderShip();
   if (shown === 'projects') renderProjects();
+  warnExtraPrimaries(shown);
+}
+// Dev-time guard: at most one visible .btn.primary across the current view and header
+function warnExtraPrimaries(shown) {
+  const visible = [...document.querySelectorAll('#v-' + shown + ' .btn.primary, header .btn.primary')].filter((b) => b.offsetParent !== null);
+  if (visible.length > 1) console.warn(`[one-primary] ${visible.length} visible .btn.primary in "${shown}" view`, visible);
 }
 
 function renderSide() {
@@ -726,6 +732,8 @@ function renderPlan() {
   put($('canvas'), roadmapCard(p), showPlanHistory(p.id)
     ? disclosure('plan:' + p.id, 'Plan history', null, h('div', { class: 'past-plan' }, content), 'board-history')
     : content);
+  // One primary per view: Approve while a draft awaits approval, otherwise Draft plan
+  $('send').classList.toggle('primary', !$('canvas').querySelector('.approve .btn.primary'));
   if (!req) requestAnimationFrame(drawEdges);
 }
 
@@ -1006,7 +1014,7 @@ function renderOverview() {
     return put($('v-overview'), h('div', { class: 'ov' }, head, h('div', { class: 'empty' },
       h('h2', { text: approval ? 'Plan ready for review' : planningFor(p.id) ? 'Drafting a plan' : 'No tasks yet' }),
       h('p', { text: 'Progress, workers and estimates appear once a plan is approved' }),
-      h('button', { class: 'btn primary', onclick: () => go({ view: 'plan' }) }, icon('plan'), approval ? 'Review plan' : 'Open plan'))));
+      h('button', { class: 'btn', onclick: () => go({ view: 'plan' }) }, icon('plan'), approval ? 'Review plan' : 'Open plan'))));
   }
   const eta = etaFor(p), unplanned = (state.phases || []).filter((x) => x.project_id === p.id && ['queued', 'drafting', 'review', 'failed'].includes(x.status)).length;
   const etaRef = eta.kind === 'eta'
@@ -1041,7 +1049,7 @@ function renderOverview() {
     p.auto_push_error ? h('div', { class: 'attn' }, h('div', { class: 'top' }, lamp('bad'), h('span', { class: 'grow', style: 'font-weight:500', text: 'Auto-push to GitHub failed' })),
       h('p', { class: 'why', text: p.auto_push_error }), h('div', {}, h('button', { class: 'btn', onclick: pushAll }, icon('ship'), 'Push now'))) : null,
     approval ? h('div', { class: 'attn' }, h('div', { class: 'top' }, lamp('wait'), h('span', { class: 'grow', style: 'font-weight:500', text: `Plan v${approval.version} needs your approval` })),
-      h('div', {}, h('button', { class: 'btn primary', onclick: () => go({ view: 'plan' }) }, 'Review plan'))) : null,
+      h('div', {}, h('button', { class: 'btn', onclick: () => go({ view: 'plan' }) }, 'Review plan'))) : null,
     ...held.map((t) => h('div', { class: 'attn' }, h('div', { class: 'top' }, lamp('bad'), h('span', { class: 'grow', style: 'font-weight:500; overflow-wrap:anywhere', text: t.title })),
       h('p', { class: 'why', text: holdText(t) }),
       due.includes(t) ? h('div', {}, h('button', { class: 'btn', onclick: () => retry(t) }, icon('retry'), 'Retry')) : null)),
