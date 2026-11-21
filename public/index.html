@@ -1,0 +1,1251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vizor Local</title>
+<style>
+  :root {
+    --deep:#0f0f10; --page:#141415; --card:#19191b; --raised:#232325; --raised-2:#2b2b2e;
+    --line:rgba(237,237,237,.08); --line-2:rgba(237,237,237,.14);
+    --text:#ededed; --text-2:#a1a1a6; --muted:#85858b;
+    --accent:#ff7a1a; --accent-hover:#ff8d3b; --on-accent:#141415;
+    --pos:#4cc38a; --neg:#e5484d;
+    --sans:"Geist","Inter","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+    --mono:"Geist Mono","JetBrains Mono","Cascadia Mono",Consolas,ui-monospace,monospace;
+    --ease:cubic-bezier(.22,1,.36,1);
+    color-scheme: dark;
+  }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { margin:0; display:grid; grid-template-columns:256px minmax(0,1fr); background:var(--page); color:var(--text); font:14px/20px var(--sans); -webkit-font-smoothing:antialiased; }
+  button, input, textarea, select { font:inherit; color:inherit; }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  [hidden] { display:none !important; }
+  .mono { font-family:var(--mono); font-size:12px; line-height:16px; font-variant-numeric:tabular-nums; }
+  .muted { color:var(--muted); } .t2 { color:var(--text-2); }
+  .grow { flex:1; min-width:0; }
+  .ellipsis { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  svg.i { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+
+  /* Signature: square lamp. Orange = something is running right now. */
+  .lamp { width:8px; height:8px; border-radius:2px; flex:none; box-shadow:inset 0 0 0 1px var(--line-2); }
+  .lamp.live { background:var(--accent); box-shadow:none; }
+  .lamp.ok { background:var(--pos); box-shadow:none; opacity:.85; }
+  .lamp.bad { background:var(--neg); box-shadow:none; opacity:.9; }
+  .lamp.wait { box-shadow:inset 0 0 0 1px var(--text-2); }
+
+  /* Sidebar */
+  aside { background:var(--deep); border-right:1px solid var(--line); display:flex; flex-direction:column; gap:24px; padding:16px 12px; overflow:auto; height:100vh; }
+  .wordmark { display:flex; align-items:center; gap:10px; height:32px; padding:0 8px; font-size:16px; font-weight:600; }
+  .wordmark .mark { width:12px; height:12px; border-radius:3px; background:var(--accent); }
+  .side-label { display:flex; align-items:center; justify-content:space-between; font-size:12px; line-height:16px; color:var(--muted); padding:0 8px; margin-bottom:8px; }
+  .stack { display:flex; flex-direction:column; gap:2px; }
+  .nav { display:flex; align-items:center; gap:10px; width:100%; height:32px; padding:0 8px; border:1px solid transparent; border-radius:8px; background:none; color:var(--text-2); text-align:left; cursor:pointer;
+    transition:background-color 140ms var(--ease), color 140ms var(--ease), border-color 140ms var(--ease); }
+  .nav:hover { background:var(--card); color:var(--text); }
+  .nav.proj { height:44px; }
+  .nav .pname { display:flex; flex-direction:column; min-width:0; gap:2px; }
+  .nav .pname .mono { font-size:11px; line-height:14px; }
+  .nav[aria-current="true"] { background:var(--raised); border-color:var(--line); color:var(--text); }
+  .kbd { font:11px/16px var(--mono); color:var(--muted); border:1px solid var(--line-2); border-radius:4px; min-width:18px; padding:0 4px; text-align:center; }
+  .side-foot { margin-top:auto; display:flex; flex-direction:column; gap:8px; padding:0 8px; font-size:12px; line-height:16px; color:var(--muted); }
+  .side-foot .row { display:flex; align-items:center; gap:8px; }
+  .conn { width:6px; height:6px; border-radius:50%; background:var(--muted); }
+  .conn.on { background:var(--pos); }
+
+  /* Shell */
+  main { display:grid; grid-template-rows:56px minmax(0,1fr); height:100vh; min-width:0; }
+  header { display:flex; align-items:center; gap:16px; padding:0 24px; border-bottom:1px solid var(--line); min-width:0; }
+  header .title { font-size:15px; font-weight:500; white-space:nowrap; }
+  header .path { color:var(--muted); }
+  .view { min-height:0; overflow:auto; }
+  .pad { padding:24px 32px; }
+  h1 { font-size:20px; line-height:28px; font-weight:500; margin:0; }
+  h2 { font-size:15px; line-height:20px; font-weight:500; margin:0; }
+  p { margin:0; }
+
+  /* Controls */
+  .btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; height:32px; padding:0 12px; border-radius:8px; border:1px solid var(--line-2); background:var(--raised); color:var(--text);
+    font-size:13px; font-weight:500; line-height:1; white-space:nowrap; cursor:pointer; transition:background-color 140ms var(--ease), border-color 140ms var(--ease), color 140ms var(--ease), transform 120ms var(--ease); }
+  .btn:hover { background:var(--raised-2); }
+  .btn:active { transform:scale(.98); }
+  .btn.primary { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }
+  .btn.primary:hover { background:var(--accent-hover); border-color:var(--accent-hover); }
+  .btn.ghost { background:none; border-color:transparent; color:var(--text-2); }
+  .btn.ghost:hover { background:var(--card); color:var(--text); }
+  .btn:disabled { opacity:.45; cursor:not-allowed; transform:none; }
+  .btn.primary:disabled { opacity:1; background:var(--raised); border-color:var(--line); color:var(--muted); }
+  .field { display:flex; flex-direction:column; gap:6px; }
+  .field > span { font-size:13px; color:var(--text-2); }
+  .field input, .field select { width:100%; }
+  .field small { font-size:12px; line-height:16px; color:var(--muted); }
+  input[type=text], input[type=number], select, textarea { background:var(--deep); border:1px solid var(--line-2); border-radius:8px; padding:0 10px; height:32px; color:var(--text);
+    transition:border-color 140ms var(--ease); }
+  textarea { height:auto; padding:10px; resize:none; line-height:20px; }
+  input:hover, select:hover, textarea:hover { border-color:rgba(237,237,237,.22); }
+  input:focus-visible, select:focus-visible, textarea:focus-visible { outline:none; border-color:var(--accent); }
+  input::placeholder, textarea::placeholder { color:var(--muted); }
+  .check { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text-2); }
+  .check input { accent-color:var(--accent); width:16px; height:16px; margin:0; }
+  .seg { display:inline-flex; gap:2px; padding:2px; background:var(--deep); border:1px solid var(--line); border-radius:10px; }
+  .seg button { height:26px; padding:0 10px; border-radius:8px; border:1px solid transparent; background:none; color:var(--text-2); font:12px/1 var(--mono); cursor:pointer; }
+  .seg button[aria-pressed="true"] { background:var(--raised); border-color:var(--line); color:var(--text); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; }
+  .status { display:inline-flex; align-items:center; gap:8px; font-size:13px; color:var(--text-2); white-space:nowrap; }
+  .empty { display:flex; flex-direction:column; gap:12px; align-items:flex-start; max-width:440px; padding:48px 0; color:var(--text-2); }
+  .empty h2 { color:var(--text); }
+
+  /* Plan view */
+  #v-plan { display:grid; grid-template-columns:400px minmax(0,1fr); overflow:hidden; }
+  .chat { display:flex; flex-direction:column; min-height:0; border-right:1px solid var(--line); }
+  .chat-actions { display:flex; justify-content:flex-end; padding:8px 24px 0; }
+  .thread { flex:1; overflow:auto; padding:24px; display:flex; flex-direction:column; gap:16px; }
+  .msg { display:flex; flex-direction:column; gap:4px; }
+  .msg .who { display:flex; gap:8px; font-size:12px; line-height:16px; color:var(--muted); }
+  .msg .body { white-space:pre-wrap; overflow-wrap:anywhere; }
+  .msg.user .body { background:var(--raised); border:1px solid var(--line); border-radius:12px; padding:10px 12px; }
+  .msg.system .body { color:var(--text-2); font-size:13px; }
+  .composer { border-top:1px solid var(--line); padding:16px 24px 20px; display:flex; flex-direction:column; gap:10px; }
+  .composer .row { display:flex; align-items:center; gap:4px; font-size:12px; color:var(--muted); }
+  .composer .row .grow { padding-left:4px; }
+  .canvas { overflow:auto; padding:24px 32px 48px; display:flex; flex-direction:column; gap:24px; min-width:0; }
+  .canvas-body { display:flex; flex-direction:column; gap:24px; min-width:0; }
+  .canvas-body > * { flex:none; }
+  .roadmap { padding:8px 0; }
+  .rm-head { display:flex; align-items:center; gap:12px; padding:8px 20px 12px; }
+  .rm-row { display:grid; grid-template-columns:8px 20px minmax(0,1fr) auto auto; align-items:center; gap:12px; min-height:40px; padding:4px 20px; border-top:1px solid var(--line); }
+  .rm-row .acts { display:flex; gap:4px; }
+  .rm-err { grid-column:3 / -1; font-size:12px; line-height:16px; color:#f08a8d; padding-bottom:6px; overflow-wrap:anywhere; }
+  .ship-commits { display:flex; flex-direction:column; border:1px solid var(--line); border-radius:10px; background:var(--deep); padding:4px 0; }
+  .ship-commits .c { display:grid; grid-template-columns:80px minmax(0,1fr); gap:12px; padding:6px 14px; font-size:13px; }
+  .note-bad { color:#f08a8d; overflow-wrap:anywhere; }
+  .canvas > *, .run > *, .narrow > * { flex:none; }
+  .canvas-head { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  .summary { font-size:15px; line-height:22px; max-width:760px; }
+  .notes { display:flex; flex-direction:column; gap:4px; font-size:13px; }
+  .notes .err { color:#f08a8d; } .notes .warn { color:var(--text-2); }
+  .approve { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  .approve p { font-size:13px; color:var(--muted); max-width:520px; }
+
+  .graph { background:var(--deep); border:1px solid var(--line); border-radius:16px; padding:20px; overflow:auto; }
+  .lanes { position:relative; display:flex; gap:56px; align-items:flex-start; width:max-content; }
+  .lanes svg.edges { position:absolute; left:0; top:0; pointer-events:none; overflow:visible; }
+  .lane { display:flex; flex-direction:column; gap:12px; width:232px; }
+  .lane-label { font-size:12px; line-height:16px; color:var(--muted); }
+  .node { position:relative; display:flex; flex-direction:column; gap:6px; text-align:left; padding:12px; border-radius:10px; background:var(--card); border:1px solid var(--line); cursor:pointer;
+    transition:background-color 140ms var(--ease), border-color 140ms var(--ease); }
+  .node:hover { background:var(--raised); }
+  .node[aria-pressed="true"] { background:var(--raised); border-color:rgba(255,122,26,.55); }
+  .node .top { display:flex; align-items:center; gap:8px; color:var(--muted); }
+  .node .ttl { font-weight:500; }
+  .node .scope { color:var(--muted); }
+  .detail { display:grid; grid-template-columns:140px minmax(0,1fr); gap:12px 24px; padding:20px; margin:0; }
+  .detail dt { font-size:13px; color:var(--muted); }
+  .detail dd { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
+
+  .planning { display:flex; flex-direction:column; gap:20px; max-width:760px; }
+  .planning .clock { font:500 40px/44px var(--mono); font-variant-numeric:tabular-nums; letter-spacing:-0.02em; }
+  .planning .req { color:var(--text-2); border-left:2px solid var(--line-2); padding-left:12px; white-space:pre-wrap; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+  .trace { display:flex; flex-direction:column; padding:8px 0; }
+  .trace .step { display:grid; grid-template-columns:8px 52px minmax(0,1fr); align-items:center; gap:12px; height:32px; padding:0 16px; color:var(--muted); }
+  .trace .step.now { color:var(--text); }
+  .outcome { padding:16px 20px; display:flex; flex-direction:column; gap:12px; }
+  .outcome .row { display:flex; gap:8px; }
+
+  /* Board */
+  .board-head, .view-heading { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-bottom:12px; }
+  .board-empty { padding:24px 0; }
+  .disclosure { display:flex; align-items:center; gap:8px; min-height:36px; cursor:pointer; list-style:none; border-radius:8px; padding:0 8px; color:var(--text-2); }
+  .disclosure::-webkit-details-marker { display:none; }
+  .disclosure:hover { color:var(--text); background:var(--card); }
+  .disclosure svg { color:var(--muted); }
+  details[open] > .disclosure svg { transform:rotate(90deg); }
+  .board-history { margin-top:24px; max-width:760px; border-top:1px solid var(--line); padding-top:8px; }
+  .past-plan { display:flex; flex-direction:column; gap:16px; padding:8px 0; }
+  .board-history .nav { min-height:40px; height:auto; padding:8px; }
+  .run-meta { color:var(--text-2); }
+  .run-meta .facts { padding:8px; overflow-wrap:anywhere; }
+  .project-link { text-align:left; max-width:100%; }
+  .project-link .grow { text-overflow:ellipsis; overflow:hidden; }
+  .board-head .seg { flex-wrap:wrap; }
+  .seg.words button { font-family:var(--sans); font-size:13px; }
+  .kanban { display:grid; grid-template-columns:repeat(5, minmax(144px, 1fr)) minmax(144px, .85fr); gap:8px; align-items:stretch; min-width:860px; }
+  .khead { position:sticky; top:0; z-index:1; display:flex; align-items:center; justify-content:space-between; height:40px; padding:0 12px;
+    background:var(--page); border-bottom:1px solid var(--line-2); font-size:13px; color:var(--text-2); }
+  .lane-head { grid-column:1 / -1; display:flex; align-items:center; gap:10px; height:36px; margin-top:12px; padding:0 8px; border:0; border-radius:8px;
+    background:none; color:var(--text); text-align:left; cursor:pointer; min-width:0; transition:background-color 140ms var(--ease); }
+  .lane-head:hover { background:var(--card); }
+  .lane-head svg { color:var(--muted); transition:transform 160ms var(--ease); }
+  .lane-head[aria-expanded="true"] svg { transform:rotate(90deg); }
+  .lane-head .lname { font-weight:500; white-space:nowrap; }
+  .lane-head .bar { width:96px; flex:none; }
+  .lane-head .cnt { width:56px; text-align:right; flex:none; }
+  #v-board.pad { padding-top:0; }
+  .board-head { padding-top:24px; }
+  .tcard.mini { flex-direction:row; align-items:flex-start; gap:8px; padding:8px 12px; }
+  .tcard.mini .lamp { margin-top:6px; }
+  .tcard.mini .ttl { flex:1; min-width:0; color:var(--text-2); overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .cell .more { align-self:flex-start; }
+  .cell { display:flex; flex-direction:column; gap:8px; min-height:96px; padding:8px; border-radius:14px; background:var(--deep); border:1px solid var(--line); min-width:0; }
+  .tcard { display:flex; flex-direction:column; gap:8px; padding:12px; border-radius:8px; background:var(--card); border:1px solid var(--line); text-align:left; cursor:pointer; width:100%;
+    transition:background-color 140ms var(--ease), border-color 140ms var(--ease); }
+  .tcard:hover { background:var(--raised); border-color:var(--line-2); }
+  .tcard .top { display:flex; align-items:flex-start; gap:8px; }
+  .tcard .top .lamp { margin-top:6px; }
+  .tcard .meta { display:flex; flex-wrap:wrap; gap:4px 12px; color:var(--muted); min-width:0; white-space:nowrap; }
+  .tcard .why { font-size:13px; line-height:18px; color:var(--text-2); overflow-wrap:anywhere; }
+
+  /* Run */
+  #v-run { display:grid; grid-template-columns:280px minmax(0,1fr); overflow:hidden; }
+  .tlist { border-right:1px solid var(--line); overflow:auto; padding:16px 12px; display:flex; flex-direction:column; gap:2px; }
+  .tlist .nav { height:36px; }
+  .run { overflow:auto; padding:24px 32px; display:flex; flex-direction:column; gap:20px; min-width:0; }
+  .facts { display:flex; flex-wrap:wrap; align-items:center; gap:8px 20px; color:var(--text-2); }
+  .hold { border-left:2px solid var(--neg); padding:2px 0 2px 12px; color:var(--text-2); overflow-wrap:anywhere; }
+  table { width:100%; border-collapse:collapse; }
+  th { text-align:left; font-size:12px; line-height:16px; font-weight:500; color:var(--muted); height:36px; padding:0 16px; border-bottom:1px solid var(--line); }
+  td { height:44px; padding:0 16px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  tbody tr:last-child td { border-bottom:0; }
+  tr.sel td { background:var(--raised); }
+  tr.click { cursor:pointer; } tr.click:hover td { background:var(--raised); }
+  .log { background:var(--deep); border:1px solid var(--line); border-radius:12px; padding:8px 0; font:12px/18px var(--mono); max-height:60vh; min-height:120px; overflow:auto; }
+  .log .ln { display:grid; grid-template-columns:64px 168px minmax(0,1fr); gap:12px; padding:3px 16px; }
+  .log .ln .ty { color:var(--text-2); }
+  .log .ln .tx { white-space:pre-wrap; overflow-wrap:anywhere; color:var(--muted); }
+  .log .ln.out .tx { color:var(--text); }
+
+  /* Projects / Ship */
+  .split { display:grid; grid-template-columns:minmax(0,1fr) 360px; gap:24px; align-items:start; }
+  .form { display:flex; flex-direction:column; gap:16px; padding:20px; }
+  .form .row { display:flex; gap:12px; } .form .row > * { flex:1; }
+  .narrow { max-width:880px; display:flex; flex-direction:column; gap:24px; }
+  .planned { display:flex; flex-direction:column; gap:8px; color:var(--text-2); font-size:13px; padding-left:16px; margin:0; }
+
+  #toast { position:fixed; right:24px; bottom:24px; max-width:420px; padding:10px 14px; border-radius:10px; background:var(--raised); border:1px solid var(--line-2); font-size:13px;
+    opacity:0; transform:translateY(8px); pointer-events:none; transition:opacity 180ms var(--ease), transform 180ms var(--ease); }
+  #toast.show { opacity:1; transform:none; }
+  #toast.bad { border-color:rgba(229,72,77,.5); }
+
+
+  /* Overview */
+  .ov { display:flex; flex-direction:column; gap:24px; max-width:1520px; }
+  .ov-head { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  .stats { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(0,1fr) minmax(0,1.2fr); gap:16px; }
+  .stat { padding:20px; display:flex; flex-direction:column; gap:8px; min-height:136px; min-width:0; }
+  .stat .lbl { font-size:13px; line-height:16px; color:var(--text-2); }
+  .stat .fig { font:500 28px/36px var(--mono); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .stat.hero .fig { font-size:40px; line-height:44px; }
+  .stat .fig small { font:400 13px/16px var(--sans); color:var(--muted); margin-left:12px; }
+  .stat .ref { font-size:13px; line-height:18px; color:var(--muted); }
+  .stat.hero .bar { margin-top:4px; }
+  .bar { display:flex; gap:2px; height:8px; }
+  .bar i { display:block; min-width:2px; border-radius:2px; background:var(--raised-2); }
+  .bar i.ok { background:var(--pos); opacity:.85; } .bar i.live { background:var(--accent); } .bar i.wait { background:#6a6a70; } .bar i.bad { background:var(--neg); opacity:.9; } .bar i.idle { background:var(--raised-2); }
+  .legend { display:flex; flex-wrap:wrap; gap:4px 16px; font-size:12px; line-height:16px; color:var(--muted); }
+  .legend span { display:inline-flex; align-items:center; gap:6px; }
+  .ov-grid { display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1fr); gap:16px; align-items:start; }
+  .col { display:flex; flex-direction:column; gap:16px; min-width:0; }
+  .panel { overflow:hidden; }
+  .panel-head { display:flex; align-items:center; gap:12px; height:48px; padding:0 20px; border-bottom:1px solid var(--line); }
+  .panel .none { padding:16px 20px; color:var(--muted); font-size:13px; }
+  .prow { display:grid; grid-template-columns:minmax(140px,1.4fr) minmax(120px,2fr) 64px; align-items:center; gap:16px; width:100%; min-height:56px; padding:8px 20px; border:0; border-top:1px solid var(--line);
+    background:none; color:inherit; text-align:left; cursor:pointer; transition:background-color 140ms var(--ease); }
+  .panel-head + .prow { border-top:0; }
+  .prow:hover { background:var(--raised); }
+  .prow .pr-name { display:flex; flex-direction:column; min-width:0; gap:2px; }
+  .prow .pr-name span:last-child { font-size:12px; line-height:16px; }
+  .prow .mono { text-align:right; }
+  .lrow { display:grid; grid-template-columns:8px minmax(0,1fr) auto; align-items:center; gap:12px; min-height:40px; padding:0 20px; border-top:1px solid var(--line); }
+  .panel-head + .lrow { border-top:0; }
+  .attn { display:flex; flex-direction:column; gap:8px; padding:12px 20px; border-top:1px solid var(--line); }
+  .panel-head + .attn { border-top:0; }
+  .attn .top { display:flex; align-items:flex-start; gap:8px; }
+  .attn .top .lamp { margin-top:6px; }
+  .attn .why { font-size:13px; line-height:18px; color:var(--text-2); overflow-wrap:anywhere; }
+
+  @media (max-width: 1100px) {
+    body { grid-template-columns:220px minmax(0,1fr); }
+    #v-plan { grid-template-columns:340px minmax(0,1fr); }
+    .split { grid-template-columns:1fr; }
+    .stats { grid-template-columns:1fr 1fr; } .stat.hero { grid-column:1 / -1; }
+    .ov-grid { grid-template-columns:1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
+</style>
+</head>
+<body>
+<aside>
+  <div class="wordmark"><span class="mark"></span>Vizor Local</div>
+  <div>
+    <div class="side-label"><span>Projects</span></div>
+    <div class="stack" id="projectList"></div>
+  </div>
+  <div>
+    <div class="side-label"><span>View</span></div>
+    <div class="stack" id="viewNav"></div>
+  </div>
+  <div class="side-foot">
+    <div class="row"><span class="conn" id="conn"></span><span id="connText">Connecting</span></div>
+    <div id="globalCap"></div>
+  </div>
+</aside>
+
+<main>
+  <header>
+    <span class="title" id="hTitle">Vizor Local</span>
+    <span class="path mono ellipsis grow" id="hPath"></span>
+    <span class="mono t2" id="hCap"></span>
+    <button class="btn" id="hPause" hidden></button>
+  </header>
+
+  <section class="view pad" id="v-none" hidden>
+    <div class="empty">
+      <h2>No projects yet</h2>
+      <p>A project is one folder with a git repository. Add one and Local creates a local origin for checked merges</p>
+      <button class="btn primary" id="goAdd">Add project</button>
+    </div>
+  </section>
+
+  <section class="view pad" id="v-overview" hidden></section>
+
+  <section class="view" id="v-plan" hidden>
+    <div class="chat">
+      <div class="chat-actions"><button class="btn ghost" type="button" id="clearChat">Clear chat</button></div>
+      <div class="thread" id="thread"></div>
+      <div class="composer">
+        <textarea id="chatIn" rows="4" placeholder="Describe a change for this repository" aria-label="Request"></textarea>
+        <div class="row">
+          <span class="kbd">Ctrl</span><span class="kbd">Enter</span><span class="grow">to send</span>
+          <button class="btn primary" id="send">Draft plan</button>
+        </div>
+      </div>
+    </div>
+    <div class="canvas">
+      <form class="card form" id="roadmapEditor" hidden>
+        <h2 id="roadmapTitle">Add roadmap phases</h2>
+        <p class="t2" style="font-size:13px">Separate phases with a line containing only <span class="mono">---</span>. The first line of each phase is its title. Vizor drafts phase 1 now, and each next phase after the previous one has merged. You approve every plan</p>
+        <textarea id="roadmapText" rows="12" class="mono" spellcheck="false" placeholder="Phase 1: Data model&#10;Describe what this phase builds...&#10;---&#10;Phase 2: Logging screens&#10;..."></textarea>
+        <div style="display:flex; gap:8px"><button class="btn primary" type="submit">Add phases</button><button class="btn ghost" type="button" id="roadmapCancel">Cancel</button></div>
+      </form>
+      <div class="canvas-body" id="canvas"></div>
+    </div>
+  </section>
+
+  <section class="view pad" id="v-board" hidden></section>
+
+  <section class="view" id="v-run" hidden>
+    <div class="tlist" id="tlist"></div>
+    <div class="run" id="run"></div>
+  </section>
+
+  <section class="view pad" id="v-ship" hidden></section>
+
+  <section class="view pad" id="v-projects" hidden>
+    <div class="split">
+      <div style="display:flex; flex-direction:column; gap:16px; min-width:0">
+        <h1>Projects</h1>
+        <div class="card" style="overflow:auto"><table><thead><tr><th>Project</th><th>Local folder</th><th>Status</th><th>Workers</th></tr></thead><tbody id="ptable"></tbody></table></div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:16px">
+        <form class="card form" id="settingsForm">
+          <h2 id="settingsTitle">Settings</h2>
+          <label class="field"><span>Test command</span><input type="text" id="sCi" class="mono" spellcheck="false"><small>Runs in a clean checkout of every PR and after every merge</small></label>
+          <label class="field"><span>Workers</span><input type="number" id="sWorkers" min="1" max="6"></label>
+          <div><button class="btn" type="submit">Save settings</button></div>
+        </form>
+        <form class="card form" id="addForm">
+          <h2>Add project</h2>
+          <label class="field"><span>Folder</span><input type="text" id="aPath" class="mono" placeholder="C:\Users\you\code\app" spellcheck="false" required></label>
+          <div class="row">
+            <label class="field"><span>Name</span><input type="text" id="aName" placeholder="Folder name"></label>
+            <label class="field" style="flex:0 0 96px"><span>Workers</span><input type="number" id="aWorkers" min="1" max="6" value="2"></label>
+          </div>
+          <label class="field"><span>Test command</span><input type="text" id="aCi" class="mono" value="npm test" spellcheck="false"></label>
+          <label class="check"><input type="checkbox" id="aCreate" checked>Create git repo and local origin if missing</label>
+          <div><button class="btn primary" type="submit">Add project</button></div>
+        </form>
+        <form class="card form" id="globalForm">
+          <h2>All projects</h2>
+          <label class="field"><span>Worker limit across projects</span><input type="number" id="gWorkers" min="1" max="12"></label>
+          <div><button class="btn" type="submit">Save limit</button></div>
+        </form>
+      </div>
+    </div>
+  </section>
+</main>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+// All untrusted text (worker output, CI logs, plans, PR content) is rendered with textContent only.
+const $ = (id) => document.getElementById(id);
+const h = (tag, props, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (v == null || v === false) continue;
+    if (k === 'class') e.className = v;
+    else if (k === 'text') e.textContent = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of kids.flat(Infinity)) if (c != null && c !== false) e.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  return e;
+};
+// replaceChildren(null) would insert the text "null": drop empty slots first.
+const put = (node, ...kids) => node.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
+const NS = 'http://www.w3.org/2000/svg';
+const ICONS = { // lucide paths (constant strings)
+  plan: '<path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/>',
+  overview: '<rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/>',
+  board: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M8 7v7"/><path d="M12 7v4"/><path d="M16 7v9"/>',
+  run: '<polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/>',
+  ship: '<path d="m18 9-6-6-6 6"/><path d="M12 3v14"/><path d="M5 21h14"/>',
+  projects: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  pause: '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
+  play: '<polygon points="6 3 20 12 6 21 6 3"/>',
+  retry: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
+  x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  chev: '<path d="m9 18 6-6-6-6"/>',
+};
+const icon = (name) => { const s = document.createElementNS(NS, 'svg'); s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('class', 'i'); s.setAttribute('aria-hidden', 'true'); s.innerHTML = ICONS[name]; return s; };
+
+const VIEWS = [['overview', 'Overview'], ['plan', 'Plan'], ['board', 'Board'], ['run', 'Run'], ['ship', 'Ship'], ['projects', 'Projects']];
+const STATUS = {
+  pending: ['Waiting', 'wait'], ready: ['Ready', 'wait'], running: ['Running', 'live'], waiting_ci: ['Checks running', 'wait'],
+  merging: ['Verifying merge', 'wait'], merged: ['Merged', 'ok'], blocked: ['Held', 'bad'], cancelled: ['Cancelled', ''],
+};
+let state = { projects: [], plans: [], tasks: [], attempts: [], messages: [], settings: [], planning: [] };
+const events = [];
+let current = null, view = 'overview', selTask = null, selNode = null, settingsFor = null;
+const selPlan = {}, dismissed = new Set();
+const drafts = new Map();
+let draftProjectId = null;
+
+// ---------- helpers ----------
+const proj = () => state.projects.find((p) => p.id === current);
+const tasksOf = (pid) => state.tasks.filter((t) => t.project_id === pid);
+const plansOf = (pid) => state.plans.filter((p) => p.project_id === pid).sort((a, b) => b.version - a.version);
+const latestPlan = (pid) => plansOf(pid)[0];
+const needsApproval = (pid) => latestPlan(pid)?.status === 'draft';
+const planningFor = (pid) => state.planning.some((r) => r.projectId === pid);
+const isOpenTask = (t) => t.status !== 'merged' && t.status !== 'cancelled';
+const showPlanHistory = (pid) => {
+  const tasks = tasksOf(pid);
+  return tasks.some((t) => t.status === 'merged') && !tasks.some(isOpenTask) &&
+    !needsApproval(pid) && !planningFor(pid) &&
+    !(state.phases || []).some((phase) => phase.project_id === pid && phase.status !== 'done');
+};
+const projectStatus = (p) => {
+  const n = running(p.id);
+  if (n) return [String(n) + ' running', 'live'];
+  if (planningFor(p.id)) return ['Planning', 'live'];
+  if (tasksOf(p.id).some((t) => t.status === 'blocked')) return ['Needs attention', 'bad'];
+  if (needsApproval(p.id)) return ['Review plan', 'wait'];
+  if (p.paused) return ['Paused', 'wait'];
+  return ['', ''];
+};
+const disclosures = new Set();
+function disclosure(key, label, count, body, className) {
+  return h('details', { class: className, open: disclosures.has(key),
+    ontoggle: (e) => {
+      const details = e.currentTarget;
+      if (!details.isConnected) return;
+      if (details.open) {
+        disclosures.add(key);
+        if (details.querySelector('#lanes')) requestAnimationFrame(drawEdges);
+      } else disclosures.delete(key);
+    } },
+    h('summary', { class: 'disclosure' }, icon('chev'), h('span', { class: 'grow', text: label }),
+      count == null ? null : h('span', { class: 'mono muted', text: String(count) })),
+    body);
+}
+const running = (pid) => tasksOf(pid).filter((t) => t.status === 'running').length;
+const short = (s) => (s ? String(s).slice(0, 8) : '');
+const lamp = (kind) => h('span', { class: 'lamp ' + (kind || '') });
+const statusEl = (s) => { const [label, kind] = STATUS[s] || [s, '']; return h('span', { class: 'status' }, lamp(kind), label); };
+const fmtClock = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+const sqlTime = (s) => new Date(String(s).replace(' ', 'T') + (String(s).endsWith('Z') ? '' : 'Z'));
+const hhmm = (d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const hhmmss = (d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+const planFor = (planId) => state.plans.find((p) => p.id === planId);
+
+let toastTimer;
+function toast(text, bad) {
+  const t = $('toast'); t.textContent = text; t.className = 'show' + (bad ? ' bad' : '');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.className = bad ? 'bad' : ''), bad ? 6000 : 3000);
+}
+async function post(path, body) {
+  try {
+    const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(j.error || `Request failed (${r.status})`, true); return null; }
+    return j;
+  } catch { toast('Local is not reachable', true); return null; }
+}
+
+// ---------- routing: #project/view/task ----------
+function readHash() {
+  const [p, v, t] = location.hash.slice(1).split('/').map((x) => decodeURIComponent(x || ''));
+  if (p) current = p;
+  if (VIEWS.some(([k]) => k === v)) view = v;
+  if (t) selTask = t;
+}
+function writeHash() {
+  const parts = [current || '', view];
+  if (view === 'run' && selTask) parts.push(selTask);
+  history.replaceState(null, '', '#' + parts.map(encodeURIComponent).join('/'));
+}
+function go(patch) {
+  if ('current' in patch && patch.current !== current) { selNode = null; shipConfirm = null; }
+  if ('current' in patch) current = patch.current;
+  if ('view' in patch && patch.view === 'ship' && view !== 'ship' && current) delete shipCache[current];
+  if ('view' in patch) view = patch.view;
+  if ('selTask' in patch) selTask = patch.selTask;
+  writeHash(); render();
+  if ('current' in patch && view === 'plan') $('thread').scrollTop = $('thread').scrollHeight;
+}
+
+// ---------- data ----------
+async function refresh() {
+  const r = await fetch('/api/state').catch(() => null);
+  if (!r) return;
+  if (r.status === 401) {
+    put(document.body, h('div', { class: 'empty', style: 'margin:48px' }, h('h2', { text: 'Session key missing' }),
+      h('p', { text: 'Open the full link printed in the terminal by serve. It contains this launch\u2019s key' })));
+    return;
+  }
+  state = await r.json();
+  if (!state.projects.some((p) => p.id === current)) current = state.projects[0]?.id ?? null;
+  render();
+}
+let pend; const soon = () => { clearTimeout(pend); pend = setTimeout(refresh, 150); };
+
+// ---------- render ----------
+function render() {
+  showProjectDrafts(proj());
+  renderSide(); renderHeader();
+  const shown = !proj() && view !== 'projects' ? 'none' : view;
+  for (const s of document.querySelectorAll('main > section')) s.hidden = s.id !== 'v-' + shown;
+  if (shown === 'overview') renderOverview();
+  if (shown === 'plan') renderPlan();
+  if (shown === 'board') renderBoard();
+  if (shown === 'run') renderRun();
+  if (shown === 'ship') renderShip();
+  if (shown === 'projects') renderProjects();
+}
+
+function renderSide() {
+  const button = (p) => {
+    const [status, kind] = projectStatus(p), st = projectStats(p);
+    return h('button', { class: 'nav proj', 'aria-current': String(p.id === current), title: p.repo_path,
+      onclick: () => go({ current: p.id, view: view === 'projects' ? 'overview' : view, selTask: null }) },
+      lamp(kind), h('span', { class: 'grow pname' }, h('span', { class: 'ellipsis', text: p.name }),
+        status ? h('span', { class: 'mono muted', text: status }) : null),
+      st.total ? h('span', { class: 'mono muted', title: `${st.c.merged} of ${st.total} tasks merged`, text: st.pct + '%' }) : null);
+  };
+  put($('projectList'), state.projects.map(button),
+    h('button', { class: 'nav', onclick: () => { go({ view: 'projects' }); $('aPath').focus(); } },
+      icon('plus'), h('span', { class: 'grow', text: 'Add project' })));
+  put($('viewNav'), ...VIEWS.map(([k, label]) =>
+    h('button', { class: 'nav', 'aria-current': String(view === k), onclick: () => go({ view: k }) }, icon(k), h('span', { class: 'grow', text: label }))));
+  const g = state.settings.find((s) => s.key === 'global_max_workers')?.value ?? '4';
+  const busy = state.tasks.filter((t) => t.status === 'running').length;
+  $('globalCap').textContent = `${busy} of ${g} workers busy across projects`;
+}
+
+function renderHeader() {
+  const p = proj();
+  $('hTitle').textContent = p ? p.name : 'Vizor Local';
+  $('hPath').textContent = p ? p.repo_path : '';
+  $('hPause').hidden = !p;
+  $('hCap').textContent = p ? running(p.id) + ' of ' + p.max_workers + ' workers' : '';
+  if (!p) return;
+  put($('hPause'), icon(p.paused ? 'play' : 'pause'), p.paused ? 'Resume dispatch' : 'Pause dispatch');
+}
+
+// ----- Plan -----
+function showProjectDrafts(project) {
+  const projectId = project?.id ?? null;
+  if (projectId === draftProjectId) return;
+  if (draftProjectId) {
+    drafts.set(draftProjectId, { chat: $('chatIn').value, roadmap: $('roadmapText').value });
+  }
+  draftProjectId = projectId;
+  const draft = drafts.get(projectId);
+  $('chatIn').value = draft?.chat ?? '';
+  $('roadmapText').value = draft?.roadmap ?? '';
+  $('roadmapEditor').hidden = true;
+  $('chatIn').placeholder = project ? 'Describe a change for ' + project.name : '';
+  $('chatIn').setAttribute('aria-label', project ? 'Request for ' + project.name : 'Request');
+  $('roadmapTitle').textContent = project ? 'Add roadmap phases for ' + project.name : 'Add roadmap phases';
+}
+
+function renderPlan() {
+  const p = proj();
+  const thread = $('thread'), atEnd = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 40;
+  const msgs = state.messages.filter((m) => m.project_id === p.id);
+  put(thread, ...(msgs.length ? msgs.map((m) => h('div', { class: 'msg ' + m.role },
+    h('div', { class: 'who' }, h('span', { text: m.role === 'user' ? 'You' : m.role === 'system' ? 'Local' : 'Planner' }), h('span', { class: 'mono', text: hhmm(sqlTime(m.created_at)) })),
+    h('div', { class: 'body', text: m.text })))
+    : [h('p', { class: 'muted', style: 'font-size:13px', text: 'Describe a change to draft a plan for your approval' })]));
+  if (atEnd) thread.scrollTop = thread.scrollHeight;
+  const req = state.planning.find((r) => r.projectId === p.id);
+  $('send').disabled = !!req; $('chatIn').disabled = !!req;
+  $('clearChat').disabled = !!req || !msgs.length;
+  const content = req ? [planningPanel(req)] : planCanvas(p);
+  put($('canvas'), roadmapCard(p), showPlanHistory(p.id)
+    ? disclosure('plan:' + p.id, 'Plan history', null, h('div', { class: 'past-plan' }, content), 'board-history')
+    : content);
+  if (!req) requestAnimationFrame(drawEdges);
+}
+
+function planningPanel(req) {
+  const start = Date.parse(req.startedAt);
+  const notes = events.filter((e) => e.type === 'plan_progress' && e.d.requestId === req.requestId).slice(-12);
+  const steps = [{ t: start, text: 'Request sent to the planner' }, ...notes.map((e) => ({ t: Date.parse(e.ts), text: e.d.note }))];
+  const trace = h('div', { class: 'card trace' }, steps.map((s, i) => {
+    const now = i === steps.length - 1;
+    return h('div', { class: 'step' + (now ? ' now' : '') }, lamp(now ? 'live' : ''), h('span', { class: 'mono', text: '+' + fmtClock(s.t - start) }), h('span', { class: 'ellipsis', text: s.text }));
+  }));
+  return h('div', { class: 'planning' },
+    h('div', { class: 'status' }, lamp('live'), 'Drafting a plan'),
+    h('div', { class: 'clock', id: 'clock', 'data-start': String(start), text: fmtClock(Date.now() - start) }),
+    h('p', { class: 'req', text: req.text }),
+    trace,
+    h('p', { class: 'muted', style: 'font-size:13px', text: 'Usually 30 to 90 seconds. You can switch views; the plan appears here when it is ready' }));
+}
+
+function lastPlanEvent(pid) {
+  if (!state.messages.some((message) => message.project_id === pid)) return null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.project_id === pid && e.type === 'chat_cleared') return null;
+    if (e.project_id === pid && ['plan_requested', 'plan_ready', 'plan_declined', 'plan_failed'].includes(e.type)) return e;
+  }
+  return null;
+}
+
+function outcomePanel(e, pid) {
+  const failed = e.type === 'plan_failed';
+  const lastText = [...state.messages].reverse().find((m) => m.project_id === pid && m.role === 'user')?.text;
+  return h('div', { class: 'card outcome' },
+    h('div', { class: 'status' }, lamp(failed ? 'bad' : ''), failed ? 'Planning failed' : 'The planner did not propose a plan'),
+    h('p', { class: failed ? 'mono t2' : 't2', text: failed ? e.d.error : (e.d.reply || 'No reason given') }),
+    h('div', { class: 'row' },
+      failed && lastText ? h('button', { class: 'btn', onclick: () => sendRequest(p.id, lastText) }, icon('retry'), 'Try again') : null,
+      h('button', { class: 'btn ghost', onclick: () => { $('chatIn').value = lastText || ''; $('chatIn').focus(); } }, 'Edit request'),
+      h('button', { class: 'btn ghost', onclick: () => { dismissed.add(e.seq); renderPlan(); } }, 'Dismiss')));
+}
+
+function levels(tasks) {
+  const by = new Map(tasks.map((t) => [t.key, t])), memo = new Map();
+  const lv = (k, seen) => {
+    if (memo.has(k)) return memo.get(k);
+    if (seen.has(k)) return 0;
+    seen.add(k);
+    const ds = (by.get(k)?.deps || []).filter((d) => by.has(d));
+    const v = ds.length ? 1 + Math.max(...ds.map((d) => lv(d, new Set(seen)))) : 0;
+    memo.set(k, v); return v;
+  };
+  for (const t of tasks) lv(t.key, new Set());
+  return memo;
+}
+
+function planCanvas(p) {
+  const out = [];
+  const le = lastPlanEvent(p.id);
+  if (le && (le.type === 'plan_failed' || le.type === 'plan_declined') && !dismissed.has(le.seq)) out.push(outcomePanel(le, p.id));
+  const plans = plansOf(p.id);
+  if (!plans.length) {
+    out.push(h('div', { class: 'empty' }, h('h2', { text: 'No plan yet' }),
+      h('p', { text: 'Use the request box to draft tasks and review what each one can change' })));
+    return out;
+  }
+  const plan = plans.find((x) => x.id === selPlan[p.id]) || plans[0];
+  const body = JSON.parse(plan.body);
+  const drafted = events.find((e) => e.type === 'plan_drafted' && e.d.planId === plan.id);
+  const validation = drafted?.d.validation || { errors: [], warnings: [] };
+  const live = new Map(state.tasks.filter((t) => t.plan_id === plan.id).map((t) => [t.key, t]));
+  const statusWord = { draft: 'Draft, waiting for approval', approved: 'Approved', superseded: 'Superseded' }[plan.status] || plan.status;
+  const anyRunning = [...live.values()].some((t) => t.status === 'running');
+
+  out.push(h('div', { class: 'canvas-head' },
+    h('h1', { text: `Plan v${plan.version}` }),
+    h('span', { class: 'status' }, lamp(anyRunning ? 'live' : plan.status === 'approved' ? 'ok' : ''), statusWord),
+    h('span', { class: 'grow' }),
+    plans.length > 1 ? h('div', { class: 'seg', role: 'group', 'aria-label': 'Plan version' }, plans.slice(0, 8).map((x) =>
+      h('button', { 'aria-pressed': String(x.id === plan.id), onclick: () => { selPlan[p.id] = x.id; selNode = null; renderPlan(); }, text: 'v' + x.version }))) : null));
+
+  if (body.summary) out.push(h('p', { class: 'summary', text: body.summary }));
+
+  if (validation.errors.length || validation.warnings.length) out.push(h('div', { class: 'notes' },
+    validation.errors.map((x) => h('p', { class: 'err', text: x })), validation.warnings.map((x) => h('p', { class: 'warn', text: x }))));
+
+  // The moment: dependency graph, live once the plan runs.
+  if (body.tasks.length) {
+    const lv = levels(body.tasks);
+    const waves = [];
+    for (const t of body.tasks) (waves[lv.get(t.key)] ||= []).push(t);
+    const lanes = h('div', { class: 'lanes', id: 'lanes' }, waves.filter(Boolean).map((ts, i) => h('div', { class: 'lane' },
+      h('div', { class: 'lane-label', text: i === 0 ? 'Starts first' : `After wave ${i}` }),
+      ts.map((t) => {
+        const lt = live.get(t.key);
+        const kind = lt ? (STATUS[lt.status] || [])[1] : '';
+        return h('button', { class: 'node', 'data-key': t.key, 'data-deps': t.deps.join(' '), 'data-status': lt?.status || '', 'aria-pressed': String(selNode === t.key),
+          onclick: () => { selNode = selNode === t.key ? null : t.key; renderPlan(); } },
+          h('div', { class: 'top' }, lamp(kind), h('span', { class: 'mono ellipsis grow', text: t.key }), lt ? h('span', { class: 'mono', text: STATUS[lt.status]?.[0] || lt.status }) : null),
+          h('div', { class: 'ttl', text: t.title }),
+          h('div', { class: 'scope mono ellipsis', text: t.writeScope[0] + (t.writeScope.length > 1 ? `  +${t.writeScope.length - 1}` : '') }));
+      }))));
+    out.push(h('div', { class: 'graph' }, lanes));
+  }
+
+  const st = body.tasks.find((t) => t.key === selNode);
+  if (st) {
+    const lt = live.get(st.key);
+    out.push(h('dl', { class: 'card detail' },
+      h('dt', { text: 'Task' }), h('dd', {}, h('span', { text: st.title + '  ' }), h('span', { class: 'mono muted', text: st.key })),
+      lt ? [h('dt', { text: 'Status' }), h('dd', { style: 'display:flex; gap:12px; align-items:center; flex-wrap:wrap' }, statusEl(lt.status),
+        lt.hold_reason && lt.status !== 'merged' ? h('span', { class: 't2', text: lt.hold_reason }) : null,
+        h('button', { class: 'btn ghost', onclick: () => go({ view: 'run', selTask: lt.id }) }, icon('run'), 'Open run'))] : null,
+      h('dt', { text: 'Instructions' }), h('dd', { text: st.prompt }),
+      h('dt', { text: 'Done when' }), h('dd', { text: st.acceptance }),
+      h('dt', { text: 'May change' }), h('dd', { class: 'mono', text: st.writeScope.join('\n') }),
+      h('dt', { text: 'Waits for' }), h('dd', { class: st.deps.length ? 'mono' : 'muted', text: st.deps.length ? st.deps.join(', ') : 'Nothing' })));
+  }
+
+  if (plan.status === 'draft') {
+    const prev = plans.find((x) => x.status === 'approved');
+    out.push(h('div', { class: 'approve' },
+      h('button', { class: 'btn primary', disabled: validation.errors.length > 0, onclick: async () => {
+        if (await post(`/api/plans/${plan.id}/approve`)) { toast(`Plan v${plan.version} approved`); refresh(); }
+      } }, `Approve plan v${plan.version}`),
+      h('p', { text: validation.errors.length ? 'Fix the errors above with a new request first'
+        : prev ? `Starts work now. From plan v${prev.version}, tasks not started yet are cancelled and running ones are held for you` : 'Starts work now, within the worker limit' })));
+  } else if (plan.status === 'approved') {
+    out.push(h('div', { class: 'approve' }, h('button', { class: 'btn', onclick: () => go({ view: 'board' }) }, icon('board'), 'Open board')));
+  }
+  return out;
+}
+
+// ----- Roadmap: phases drafted one after another; every plan still needs the owner's approval -----
+const PHASE = { queued: ['Queued', ''], drafting: ['Drafting plan', 'live'], review: ['Waiting for your approval', 'wait'], running: ['Running', 'live'], done: ['Done', 'ok'], failed: ['Stopped', 'bad'] };
+function roadmapCard(p) {
+  const phs = (state.phases || []).filter((x) => x.project_id === p.id);
+  const add = h('button', { class: 'btn ghost', onclick: () => { $('roadmapEditor').hidden = false; $('roadmapText').focus(); } }, icon('plus'), phs.length ? 'Add phases' : 'Add roadmap');
+  if (!phs.length) return h('div', { class: 'card roadmap' }, h('div', { class: 'rm-head', style: 'padding-bottom:8px' }, h('h2', { text: 'Roadmap' }),
+    h('span', { class: 'grow muted', style: 'font-size:13px', text: 'Queue several phases. Each is drafted after the previous one merges' }), add));
+  const done = phs.filter((x) => x.status === 'done').length;
+  return h('div', { class: 'card roadmap' },
+    h('div', { class: 'rm-head' }, h('h2', { text: 'Roadmap' }), h('span', { class: 'mono muted', text: `${done} of ${phs.length} done` }),
+      p.roadmap_paused ? h('span', { class: 't2', style: 'font-size:13px', text: 'Paused' }) : null, h('span', { class: 'grow' }),
+      h('button', { class: 'btn ghost', onclick: async () => { if (await post(`/api/projects/${p.id}/roadmap-pause`, { paused: !p.roadmap_paused })) refresh(); } },
+        icon(p.roadmap_paused ? 'play' : 'pause'), p.roadmap_paused ? 'Resume' : 'Pause'), add),
+    phs.map((ph, i) => {
+      const [label, kind] = PHASE[ph.status] || [ph.status, ''];
+      const plan = ph.plan_id ? planFor(ph.plan_id) : null;
+      return [h('div', { class: 'rm-row' }, lamp(kind), h('span', { class: 'mono muted', text: String(i + 1) }), h('span', { class: 'ellipsis', title: ph.prompt, text: ph.title }),
+        h('span', { class: 't2', style: 'font-size:13px; white-space:nowrap', text: label + (plan ? ` · v${plan.version}` : '') }),
+        h('div', { class: 'acts' },
+          ph.status === 'review' && ph.plan_id ? h('button', { class: 'btn', onclick: () => { selPlan[p.id] = ph.plan_id; selNode = null; renderPlan(); } }, 'Review plan') : null,
+          ph.status === 'failed' ? h('button', { class: 'btn', onclick: async () => { if (await post(`/api/phases/${ph.id}/retry`)) refresh(); } }, icon('retry'), 'Retry') : null,
+          ['queued', 'failed'].includes(ph.status) ? h('button', { class: 'btn ghost', 'aria-label': 'Remove phase', onclick: async () => { if (await post(`/api/phases/${ph.id}/remove`)) refresh(); } }, icon('x')) : null)),
+        ph.status === 'failed' && ph.error ? h('div', { class: 'rm-row', style: 'border-top:0; min-height:0' }, h('span'), h('span'), h('p', { class: 'rm-err', text: ph.error })) : null];
+    }));
+}
+
+function drawEdges() {
+  const lanes = $('lanes'); if (!lanes || !lanes.isConnected || !lanes.offsetWidth) return;
+  lanes.querySelector('svg.edges')?.remove();
+  const box = lanes.getBoundingClientRect();
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('class', 'edges'); svg.setAttribute('width', lanes.scrollWidth); svg.setAttribute('height', lanes.scrollHeight);
+  const nodes = new Map([...lanes.querySelectorAll('.node')].map((n) => [n.dataset.key, n]));
+  for (const n of nodes.values()) for (const d of n.dataset.deps.split(' ').filter(Boolean)) {
+    const dep = nodes.get(d); if (!dep) continue;
+    const a = dep.getBoundingClientRect(), b = n.getBoundingClientRect();
+    const ax = a.right - box.left, ay = a.top + a.height / 2 - box.top, bx = b.left - box.left, by = b.top + b.height / 2 - box.top, mx = (ax + bx) / 2;
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('d', `M${ax} ${ay} C${mx} ${ay}, ${mx} ${by}, ${bx} ${by}`);
+    path.setAttribute('fill', 'none'); path.setAttribute('stroke-width', '1.5');
+    const lit = dep.dataset.status === 'merged' && ['running', 'waiting_ci', 'merging'].includes(n.dataset.status);
+    path.setAttribute('stroke', lit ? 'rgba(255,122,26,.7)' : 'rgba(237,237,237,.2)');
+    svg.append(path);
+  }
+  lanes.prepend(svg);
+}
+
+async function sendRequest(projectId, text) {
+  if (!projectId || !text.trim()) return;
+  if (await post(`/api/projects/${encodeURIComponent(projectId)}/chat`, { text: text.trim() })) {
+    clearSubmittedDraft(projectId, 'chat', 'chatIn', text);
+    refresh();
+  }
+}
+
+function clearSubmittedDraft(projectId, field, inputId, text) {
+  if (projectId === draftProjectId) {
+    const input = $(inputId);
+    if (input.value !== text) return false;
+    input.value = '';
+    return true;
+  }
+  const draft = drafts.get(projectId);
+  if (draft?.[field] === text) draft[field] = '';
+  return false;
+}
+
+// ----- Board: status columns x swimlanes (by plan, by dependency wave, or none) -----
+// ----- Overview: progress, workers, ETA, what needs you -----
+const BUCKETS = [['merged', 'Merged', 'ok'], ['running', 'Running', 'live'], ['checks', 'Checks', 'wait'], ['ready', 'Ready', 'wait'], ['waiting', 'Waiting', 'idle'], ['held', 'Held', 'bad']];
+const BUCKET_OF = { merged: 'merged', running: 'running', waiting_ci: 'checks', merging: 'checks', ready: 'ready', pending: 'waiting', blocked: 'held' };
+function tally(ts) {
+  const c = { merged: 0, running: 0, checks: 0, ready: 0, waiting: 0, held: 0 };
+  for (const t of ts) if (BUCKET_OF[t.status]) c[BUCKET_OF[t.status]]++;
+  return c;
+}
+function projectStats(p) {
+  const ts = tasksOf(p.id).filter((t) => t.status !== 'cancelled'), c = tally(ts);
+  return { c, total: ts.length, pct: !ts.length ? 0 : c.merged === ts.length ? 100 : Math.floor((100 * c.merged) / ts.length) };
+}
+function segBar(c) {
+  const parts = BUCKETS.filter(([k]) => c[k]);
+  return h('div', { class: 'bar', role: 'img', 'aria-label': parts.map(([k, l]) => `${c[k]} ${l.toLowerCase()}`).join(', ') || 'No tasks' },
+    parts.length ? parts.map(([k, , kind]) => h('i', { class: kind, style: `flex:${c[k]} 1 0` })) : h('i', { class: 'idle', style: 'flex:1' }));
+}
+const clockAt = (ms) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+const clockDay = (ms) => (new Date(ms).toDateString() === new Date().toDateString() ? '' : new Date(ms).toLocaleDateString([], { weekday: 'short' }) + ' ') + clockAt(ms);
+const fmtDur = (ms) => { const m = Math.max(1, Math.round(ms / 60000)); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`; };
+const ago = (d) => { const m = Math.floor((Date.now() - d.getTime()) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.floor(m / 60)} h ago` : `${Math.floor(m / 1440)} d ago`; };
+const usageWaiting = (t) => t.status === 'blocked' && Number(t.usage_retry_at) > Date.now();
+function holdText(t) {
+  if (t.usage_retry_at) {
+    const at = clockAt(Number(t.usage_retry_at));
+    return usageWaiting(t) ? `Claude usage limit. Retries automatically at ${at}` : `Claude usage limit reset at ${at}. Retry is due`;
+  }
+  return t.hold_reason || '';
+}
+// Median time from a task's first attempt to its merge, over this project's merged tasks. Needs 3 samples.
+function medianTaskMs(pid) {
+  const first = new Map();
+  for (const a of state.attempts) { const s = sqlTime(a.started_at).getTime(); if (Number.isFinite(s) && (!first.has(a.task_id) || s < first.get(a.task_id))) first.set(a.task_id, s); }
+  const d = tasksOf(pid).filter((t) => t.status === 'merged').map((t) => sqlTime(t.updated_at).getTime() - (first.get(t.id) ?? NaN))
+    .filter((x) => x >= 30000 && x <= 6 * 3600000).sort((a, b) => a - b);
+  return { n: d.length, median: d.length >= 3 ? d[Math.floor(d.length / 2)] : null };
+}
+// Longest chain of unmerged tasks that must run one after another.
+function chainLeft(pid) {
+  const open = tasksOf(pid).filter(isOpenTask), by = new Map(open.map((t) => [t.plan_id + ':' + t.key, t])), memo = new Map();
+  const depth = (t, seen) => {
+    const id = t.plan_id + ':' + t.key;
+    if (memo.has(id)) return memo.get(id);
+    if (seen.has(id)) return 1;
+    seen.add(id);
+    let ds = []; try { ds = JSON.parse(t.deps || '[]'); } catch { /* no deps */ }
+    const v = 1 + Math.max(0, ...ds.map((k) => by.get(t.plan_id + ':' + k)).filter(Boolean).map((d) => depth(d, new Set(seen))));
+    memo.set(id, v); return v;
+  };
+  return Math.max(0, ...open.map((t) => depth(t, new Set())));
+}
+function etaFor(p) {
+  const open = tasksOf(p.id).filter(isOpenTask);
+  if (!open.length) return { kind: 'done' };
+  const { n, median } = medianTaskMs(p.id);
+  if (median == null) return { kind: 'none', n };
+  const w = Math.max(1, p.max_workers), rounds = Math.max(Math.ceil(open.length / w), chainLeft(p.id));
+  const waits = open.filter(usageWaiting).map((t) => Number(t.usage_retry_at));
+  const idle = !open.some((t) => ['running', 'waiting_ci', 'merging'].includes(t.status));
+  const start = idle && waits.length ? Math.max(Date.now(), Math.min(...waits)) : Date.now();
+  return { kind: 'eta', finish: start + rounds * median, median, n, needsYou: open.filter((t) => t.status === 'blocked' && !t.usage_retry_at).length };
+}
+const panel = (title, count, body, action) => h('section', { class: 'card panel' },
+  h('div', { class: 'panel-head' }, h('h2', { class: 'grow', text: title }), action, count == null ? null : h('span', { class: 'mono muted', text: String(count) })), body);
+async function retryMany(ts) {
+  let ok = 0;
+  for (const t of ts) if (await post(`/api/tasks/${encodeURIComponent(t.id)}/retry`)) ok++;
+  if (ok) toast(`Retrying ${ok} task${ok === 1 ? '' : 's'}`);
+  refresh();
+}
+function renderOverview() {
+  const p = proj(), ts = tasksOf(p.id).filter((t) => t.status !== 'cancelled');
+  const { c, total, pct } = projectStats(p), [stText, stKind] = projectStatus(p);
+  const head = h('div', { class: 'ov-head' }, h('h1', { text: 'Overview' }), stText ? h('span', { class: 'status' }, lamp(stKind), stText) : null);
+  if (!total) {
+    const approval = needsApproval(p.id);
+    return put($('v-overview'), h('div', { class: 'ov' }, head, h('div', { class: 'empty' },
+      h('h2', { text: approval ? 'Plan ready for review' : planningFor(p.id) ? 'Drafting a plan' : 'No tasks yet' }),
+      h('p', { text: 'Progress, workers and estimates appear once a plan is approved' }),
+      h('button', { class: 'btn primary', onclick: () => go({ view: 'plan' }) }, icon('plan'), approval ? 'Review plan' : 'Open plan'))));
+  }
+  const eta = etaFor(p), unplanned = (state.phases || []).filter((x) => x.project_id === p.id && ['queued', 'drafting', 'review', 'failed'].includes(x.status)).length;
+  const etaRef = eta.kind === 'eta'
+    ? [`About ${clockDay(eta.finish)}`, `Median ${fmtDur(eta.median)} per task, from ${eta.n} merged`,
+      eta.needsYou ? `Assumes ${eta.needsYou} held task${eta.needsYou === 1 ? ' is' : 's are'} retried` : null,
+      unplanned ? `Not counting ${unplanned} roadmap phase${unplanned === 1 ? '' : 's'} not planned yet` : null]
+    : eta.kind === 'none' ? [`Needs 3 merged tasks to estimate, ${eta.n} so far`] : [unplanned ? `${unplanned} roadmap phase${unplanned === 1 ? '' : 's'} not planned yet` : 'All tasks merged'];
+  const hero = h('div', { class: 'card stat hero' }, h('span', { class: 'lbl', text: 'Done' }),
+    h('span', { class: 'fig' }, `${pct}%`, h('small', { text: `${c.merged} of ${total} tasks merged` })), segBar(c),
+    h('div', { class: 'legend' }, BUCKETS.filter(([k]) => c[k]).map(([k, label, kind]) => h('span', {}, lamp(kind === 'idle' ? '' : kind), label, h('span', { class: 'mono', text: String(c[k]) })))));
+  const workers = h('div', { class: 'card stat' }, h('span', { class: 'lbl', text: 'Active workers' }),
+    h('span', { class: 'fig' }, String(c.running), h('small', { text: `of ${p.max_workers}` })),
+    h('span', { class: 'ref', text: p.paused ? 'Dispatch paused' : `${c.ready} ready, ${c.checks} in checks` }));
+  const etaCard = h('div', { class: 'card stat' }, h('span', { class: 'lbl', text: 'Estimated finish' }),
+    h('span', { class: 'fig', text: eta.kind === 'eta' ? fmtDur(eta.finish - Date.now()) : eta.kind === 'done' ? 'Done' : '—' }),
+    etaRef.filter(Boolean).map((x) => h('span', { class: 'ref', text: x })));
+
+  const planRows = plansOf(p.id).filter((pl) => pl.status !== 'draft').map((pl) => {
+    const pts = ts.filter((t) => t.plan_id === pl.id); if (!pts.length) return null;
+    const pc = tally(pts); let summary = ''; try { summary = JSON.parse(pl.body).summary || ''; } catch { /* none */ }
+    return h('button', { class: 'prow', onclick: () => go({ view: 'board' }) },
+      h('span', { class: 'pr-name' }, h('span', { text: 'Plan v' + pl.version }), h('span', { class: 'muted ellipsis', text: summary })),
+      segBar(pc), h('span', { class: 'mono t2', text: `${pc.merged} / ${pts.length}` }));
+  }).filter(Boolean);
+  const phases = (state.phases || []).filter((x) => x.project_id === p.id).sort((a, b) => a.position - b.position);
+  const PH = { done: ['Done', 'ok'], running: ['Running', 'live'], drafting: ['Drafting', 'live'], review: ['Review plan', 'wait'], queued: ['Queued', ''], failed: ['Failed', 'bad'] };
+  const merged = ts.filter((t) => t.status === 'merged').sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at))).slice(0, 5);
+
+  const held = ts.filter((t) => t.status === 'blocked'), due = held.filter((t) => !usageWaiting(t));
+  const approval = needsApproval(p.id) ? latestPlan(p.id) : null;
+  const attn = [
+    approval ? h('div', { class: 'attn' }, h('div', { class: 'top' }, lamp('wait'), h('span', { class: 'grow', style: 'font-weight:500', text: `Plan v${approval.version} needs your approval` })),
+      h('div', {}, h('button', { class: 'btn primary', onclick: () => go({ view: 'plan' }) }, 'Review plan'))) : null,
+    ...held.map((t) => h('div', { class: 'attn' }, h('div', { class: 'top' }, lamp('bad'), h('span', { class: 'grow', style: 'font-weight:500; overflow-wrap:anywhere', text: t.title })),
+      h('p', { class: 'why', text: holdText(t) }),
+      due.includes(t) ? h('div', {}, h('button', { class: 'btn', onclick: () => retry(t) }, icon('retry'), 'Retry')) : null)),
+  ].filter(Boolean);
+  const live = ts.filter((t) => t.status === 'running');
+
+  put($('v-overview'), h('div', { class: 'ov' }, head, h('div', { class: 'stats' }, hero, workers, etaCard),
+    h('div', { class: 'ov-grid' },
+      h('div', { class: 'col' },
+        panel('Progress by plan', null, planRows.length ? planRows : h('p', { class: 'none', text: 'No approved plans' })),
+        phases.length ? panel('Roadmap', `${phases.filter((x) => x.status === 'done').length} of ${phases.length}`, phases.map((ph) => {
+          const [label, kind] = PH[ph.status] || [ph.status, ''];
+          return h('div', { class: 'lrow' }, lamp(kind), h('span', { class: 'ellipsis', text: ph.title }), h('span', { class: 'mono muted', text: label }));
+        })) : null,
+        panel('Recently merged', null, merged.length ? merged.map((t) => h('div', { class: 'lrow' }, lamp('ok'), h('span', { class: 'ellipsis', text: t.title }),
+          h('span', { class: 'mono muted', text: (t.pr_number ? `#${t.pr_number} · ` : '') + ago(sqlTime(t.updated_at)) }))) : h('p', { class: 'none', text: 'Nothing merged yet' }))),
+      h('div', { class: 'col' },
+        panel('Needs you', attn.length || null, attn.length ? attn : h('p', { class: 'none', text: 'Nothing needs you' }),
+          due.length > 1 ? h('button', { class: 'btn', onclick: () => retryMany(due) }, icon('retry'), 'Retry all') : null),
+        panel('Running now', live.length || null, live.length ? live.map((t) => {
+          const a = state.attempts.find((x) => x.task_id === t.id && x.status === 'running');
+          return h('div', { class: 'lrow' }, lamp('live'), h('span', { class: 'ellipsis', text: t.title }), h('span', { class: 'mono muted', text: a ? fmtDur(Date.now() - sqlTime(a.started_at).getTime()) : '' }));
+        }) : h('p', { class: 'none', text: p.paused ? 'Dispatch paused' : 'No worker is running' }))))));
+}
+
+// ----- Board: status columns x swimlanes (by plan, by dependency wave, or none) -----
+const COLUMNS = [['Waiting', ['pending']], ['Ready', ['ready']], ['Running', ['running']], ['Checks', ['waiting_ci', 'merging']], ['Held', ['blocked']], ['Merged', ['merged']]];
+let boardGroup = 'plan';
+const laneOpen = new Map(), mergedAll = new Set();
+const MERGED_CAP = 4;
+function boardLanes(plans, all) {
+  if (boardGroup === 'none') return [{ id: 'all', label: '', sub: '', tasks: all, open: true }];
+  return plans.flatMap((plan) => {
+    const tasks = all.filter((t) => t.plan_id === plan.id);
+    if (!tasks.length) return [];
+    let summary = ''; try { summary = JSON.parse(plan.body).summary || ''; } catch { /* none */ }
+    if (boardGroup === 'plan') return [{ id: 'plan:' + plan.id, label: 'Plan v' + plan.version, sub: summary, tasks, open: tasks.some(isOpenTask) }];
+    const levelsByTask = levels(JSON.parse(plan.body).tasks), waves = [];
+    for (const item of tasks) (waves[levelsByTask.get(item.key) ?? 0] ??= []).push(item);
+    return waves.flatMap((items, wave) => items ? [{ id: 'wave:' + plan.id + ':' + wave, label: `Plan v${plan.version} / Wave ${wave + 1}`, sub: wave ? `After wave ${wave}` : 'Starts first', tasks: items, open: items.some(isOpenTask) }] : []);
+  });
+}
+function renderBoard() {
+  const p = proj(), plans = plansOf(p.id).filter((plan) => plan.status !== 'draft');
+  const all = tasksOf(p.id).filter((t) => t.status !== 'cancelled');
+  const seg = all.length ? h('div', { class: 'seg words', role: 'group', 'aria-label': 'Group tasks' },
+    [['plan', 'By plan'], ['wave', 'By wave'], ['none', 'No grouping']].map(([key, label]) =>
+      h('button', { 'aria-pressed': String(boardGroup === key), onclick: () => {
+        boardGroup = key;
+        renderBoard();
+        $('v-board').querySelector('[aria-pressed="true"]')?.focus();
+      }, text: label }))) : null;
+  const c = tally(all);
+  const header = h('div', { class: 'board-head' }, h('h1', { text: 'Board' }), seg, h('span', { class: 'grow' }),
+    all.length ? h('span', { class: 'mono muted', text: `${c.merged} of ${all.length} merged · ${c.running} of ${p.max_workers} workers` }) : null);
+  if (!all.length) {
+    const approval = needsApproval(p.id);
+    const title = approval ? 'Plan ready for review' : planningFor(p.id) ? 'Drafting a plan' : plans.length ? 'No tasks' : 'No approved tasks yet';
+    return put($('v-board'), header, h('div', { class: 'empty board-empty' }, h('h2', { text: title }),
+      h('button', { class: 'btn', onclick: () => go({ view: 'plan' }) }, icon('plan'), approval ? 'Review plan' : 'Open plan')));
+  }
+  const lanes = boardLanes(plans, all);
+  const openTask = (t) => ({ role: 'button', tabindex: '0', onclick: () => go({ view: 'run', selTask: t.id }),
+    onkeydown: (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); go({ view: 'run', selTask: t.id }); } } });
+  const mini = (t) => h('div', { class: 'tcard mini', ...openTask(t) }, lamp('ok'), h('span', { class: 'ttl', title: t.pr_number ? `${t.title} (PR #${t.pr_number})` : t.title, text: t.title }));
+  put($('v-board'), header,
+    h('div', { class: 'kanban' },
+      COLUMNS.map(([label, states]) => {
+        const n = all.filter((t) => states.includes(t.status)).length;
+        return h('div', { class: 'khead' }, h('span', { text: label }),
+          h('span', { class: 'mono muted', title: label === 'Running' ? 'Running now / worker limit' : null, text: label === 'Running' ? `${n} / ${p.max_workers}` : String(n) }));
+      }),
+      lanes.map((lane) => {
+        const open = laneOpen.get(lane.id) ?? lane.open, lc = tally(lane.tasks);
+        return [
+          lane.label ? h('button', { class: 'lane-head', 'data-lane': lane.id, 'aria-expanded': String(open), onclick: () => {
+            laneOpen.set(lane.id, !open);
+            renderBoard();
+            [...$('v-board').querySelectorAll('[data-lane]')].find((node) => node.dataset.lane === lane.id)?.focus();
+          } }, icon('chev'), lamp(lc.running ? 'live' : lc.merged === lane.tasks.length ? 'ok' : lc.held ? 'bad' : ''),
+          h('span', { class: 'lname', text: lane.label }), h('span', { class: 'grow ellipsis t2', text: lane.sub }),
+          segBar(lc), h('span', { class: 'mono muted cnt', text: `${lc.merged} / ${lane.tasks.length}` })) : null,
+          open ? COLUMNS.map(([label, states]) => {
+            const ts = lane.tasks.filter((t) => states.includes(t.status));
+            if (label !== 'Merged') return h('div', { class: 'cell' }, ts.map(taskCard));
+            ts.sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+            const every = mergedAll.has(lane.id), extra = ts.length - MERGED_CAP;
+            return h('div', { class: 'cell' }, (every ? ts : ts.slice(0, MERGED_CAP)).map(mini),
+              extra > 0 ? h('button', { class: 'btn ghost more', onclick: () => { if (every) mergedAll.delete(lane.id); else mergedAll.add(lane.id); renderBoard(); }, text: every ? 'Show fewer' : `Show ${extra} more` }) : null);
+          }) : null,
+        ];
+      })));
+}
+function taskCard(t) {
+  const [, kind] = STATUS[t.status] || [];
+  const run = state.attempts.find((a) => a.task_id === t.id && a.status === 'running');
+  return h('div', { class: 'tcard', role: 'button', tabindex: '0', onclick: () => go({ view: 'run', selTask: t.id }), onkeydown: (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); go({ view: 'run', selTask: t.id }); } } },
+    h('div', { class: 'top' }, lamp(kind), h('span', { class: 'grow', style: 'font-weight:500; overflow-wrap:anywhere', text: t.title })),
+    h('div', { class: 'meta mono' }, h('span', { class: 'ellipsis', text: t.key }), t.pr_number ? h('span', { text: `#${t.pr_number}` }) : null,
+      t.merge_sha || t.head_sha ? h('span', { text: short(t.merge_sha || t.head_sha) }) : null, t.repair_count ? h('span', { text: `${t.repair_count} repair${t.repair_count > 1 ? 's' : ''}` }) : null),
+    t.status === 'blocked' ? h('p', { class: 'why', text: holdText(t) }) : t.hold_reason && t.status !== 'merged' ? h('p', { class: 'why', text: t.hold_reason }) : null,
+    t.status === 'blocked' && !usageWaiting(t) ? h('div', {}, h('button', { class: 'btn', onclick: (e) => { e.stopPropagation(); retry(t); } }, icon('retry'), 'Retry')) : null,
+    run ? h('div', {}, h('button', { class: 'btn ghost', onclick: (e) => { e.stopPropagation(); cancelRun(run); } }, icon('x'), 'Cancel run')) : null);
+}
+async function retry(t) { if (await post(`/api/tasks/${encodeURIComponent(t.id)}/retry`)) { toast(`Retrying ${t.key}`); refresh(); } }
+async function cancelRun(a) { if (await post(`/api/attempts/${encodeURIComponent(a.id)}/cancel`)) toast('Cancel sent'); }
+
+// ----- Run -----
+function evText(e) {
+  const d = e.d;
+  switch (e.type) {
+    case 'worker_output': return d.text;
+    case 'task_claimed': return `${d.kind} attempt claimed`;
+    case 'task_ready': return '';
+    case 'worker_started': return `pid ${d.pid} · ${d.kind} · ${d.worker}`;
+    case 'worktree_ready': return `${d.path} · from ${short(d.baseSha)}`;
+    case 'pr_published': return `PR #${d.pr} ${d.created ? 'opened' : 'updated'} at ${short(d.head)} · ${(d.files || []).join(', ')}`;
+    case 'check_completed': return `${d.conclusion} on ${short(d.sha)} (check ${d.check})`;
+    case 'repair_scheduled': return `check ${d.check} failed on ${short(d.sha)}`;
+    case 'pr_merged': return `PR #${d.pr} merged as ${short(d.mergeSha)}, verifying`;
+    case 'task_merged': return `verified ${short(d.mergeSha)}`;
+    case 'branch_updated_from_base': return `branch updated, new head ${short(d.head)}`;
+    case 'task_blocked': return d.reason;
+    case 'runner_error': return d.error;
+    default: { const s = JSON.stringify(d); return s === '{}' ? '' : s; }
+  }
+}
+function renderRun() {
+  const p = proj();
+  const tasks = tasksOf(p.id).filter((t) => t.status !== 'cancelled' || t.id === selTask)
+    .sort((a, b) => Number(isOpenTask(b)) - Number(isOpenTask(a)) || b.plan_id - a.plan_id);
+  if (!tasks.some((t) => t.id === selTask)) selTask = (tasks.find((t) => t.status === 'running') || tasks[0])?.id ?? null;
+  put($('tlist'), ...(tasks.length ? tasks.map((t) => h('button', { class: 'nav', 'aria-current': String(t.id === selTask), onclick: () => go({ selTask: t.id }) },
+    lamp((STATUS[t.status] || [])[1]), h('span', { class: 'grow ellipsis', text: t.title }), h('span', { class: 'mono muted', text: 'v' + (planFor(t.plan_id)?.version ?? '') })))
+    : [h('p', { class: 'muted', style: 'padding:8px; font-size:13px', text: 'No tasks yet' })]));
+  const t = state.tasks.find((x) => x.id === selTask);
+  const runEl = $('run');
+  if (!t) return put(runEl, h('div', { class: 'empty' }, h('h2', { text: 'No run selected' }), h('p', { text: 'Runs appear once a plan is approved' })));
+  const old = runEl.querySelector('.log'), sameTask = runEl.dataset.task === t.id;
+  const atEnd = !old || !sameTask || old.scrollHeight - old.scrollTop - old.clientHeight < 40, keep = old?.scrollTop ?? 0;
+  const atts = state.attempts.filter((a) => a.task_id === t.id);
+  const active = atts.find((a) => a.status === 'running');
+  const evs = events.filter((e) => e.task_id === t.id);
+  const log = h('div', { class: 'log' }, evs.length ? evs.map((e) => h('div', { class: 'ln' + (e.type === 'worker_output' ? ' out' : '') },
+    h('span', { class: 'muted', text: hhmmss(new Date(e.ts)) }), h('span', { class: 'ty ellipsis', text: e.type === 'worker_output' ? e.d.kind : e.type.replace(/_/g, ' ') }), h('span', { class: 'tx', text: evText(e) })))
+    : h('div', { class: 'ln' }, h('span'), h('span'), h('span', { class: 'tx', text: 'No events yet' })));
+  runEl.dataset.task = t.id;
+  put(runEl, 
+    h('div', { style: 'display:flex; align-items:center; gap:16px' }, h('h1', { class: 'grow', style: 'overflow-wrap:anywhere', text: t.title }),
+      t.status === 'blocked' ? h('button', { class: 'btn', onclick: () => retry(t) }, icon('retry'), 'Retry') : null,
+      active ? h('button', { class: 'btn ghost', onclick: () => cancelRun(active) }, icon('x'), 'Cancel run') : null),
+    h('div', { class: 'facts' }, statusEl(t.status),
+      t.pr_number ? h('span', { class: 'mono', text: `PR #${t.pr_number}` }) : null,
+      t.repair_count ? h('span', { class: 'mono', text: `${t.repair_count} repair${t.repair_count > 1 ? 's' : ''}` }) : null),
+    t.hold_reason && t.status !== 'merged' ? h('p', { class: t.status === 'blocked' ? 'hold' : 't2', text: t.hold_reason }) : null,
+    atts.length ? h('div', { class: 'card', style: 'overflow:hidden' }, h('table', {},
+      h('thead', {}, h('tr', {}, ['Attempt', 'Status', 'Exit', 'Started', 'Note'].map((x) => h('th', { text: x })))),
+      h('tbody', {}, atts.map((a, i) => h('tr', {},
+        h('td', { class: 'mono', text: `${i + 1} · ${a.kind}` }),
+        h('td', {}, h('span', { class: 'status' }, lamp(a.status === 'running' ? 'live' : a.status === 'succeeded' ? 'ok' : ['failed', 'uncertain'].includes(a.status) ? 'bad' : ''), a.status[0].toUpperCase() + a.status.slice(1))),
+        h('td', { class: 'mono', text: a.exit_code ?? '–' }), h('td', { class: 'mono t2', text: hhmmss(sqlTime(a.started_at)) }),
+        h('td', { class: 't2 ellipsis', style: 'max-width:360px', text: a.reason || '' })))))) : null,
+    h('h2', { text: 'Activity log' }), log,
+    disclosure('run:' + t.id, 'Git details', null,
+      h('div', { class: 'facts mono' }, t.branch, t.head_sha ? 'Head ' + short(t.head_sha) : null,
+        t.merge_sha ? 'Merge ' + short(t.merge_sha) : null), 'run-meta'));
+  log.scrollTop = atEnd ? log.scrollHeight : keep;
+}
+
+// ----- Ship: your folder + push to GitHub (fast-forward only, owner confirms) -----
+const shipCache = {}; let shipConfirm = null;
+async function loadShip(pid, fetchGithub = true) {
+  shipCache[pid] = { ...(shipCache[pid] || {}), loading: true };
+  if (view === 'ship') renderShip();
+  try {
+    const r = await fetch(`/api/projects/${encodeURIComponent(pid)}/ship?fetch=${fetchGithub ? 1 : 0}`);
+    const j = await r.json();
+    shipCache[pid] = r.ok ? { data: j, at: Date.now() } : { error: j.error || `failed (${r.status})`, at: Date.now() };
+  } catch { shipCache[pid] = { error: 'Local is not reachable', at: Date.now() }; }
+  if (view === 'ship') renderShip();
+}
+function renderShip() {
+  const p = proj(), c = shipCache[p.id];
+  if (!c) { loadShip(p.id); return; }
+  const d = c.data;
+  const merged = tasksOf(p.id).filter((t) => t.merge_sha && (t.status === 'merged' || t.status === 'merging'))
+    .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+  const recheck = h('button', { class: 'btn ghost', disabled: !!c.loading, onclick: () => loadShip(p.id) }, icon('retry'), c.loading ? 'Checking' : 'Check again');
+
+  // Folder card
+  const f = d?.folder;
+  const folderLine = !f ? 'Folder status unavailable'
+    : f.branch !== p.base_branch ? `On branch ${f.branch}, so it is not updated automatically`
+    : f.dirty ? 'You have uncommitted changes, so it is not updated automatically'
+    : f.ahead ? `Has ${f.ahead} commit(s) that Local's main does not have, so it is not updated automatically`
+    : f.behind ? `${f.behind} commit${f.behind === 1 ? '' : 's'} behind ${p.base_branch}` : 'Up to date with local merges';
+  const folderCard = h('div', { class: 'card form' },
+    h('div', { style: 'display:flex; align-items:center; gap:16px' }, h('h2', { class: 'grow', text: 'Your folder' }),
+      f && f.behind && !f.dirty && !f.ahead && f.branch === p.base_branch ? h('button', { class: 'btn', onclick: async () => {
+        const r = await post(`/api/projects/${p.id}/sync`); if (r) { toast(r.synced ? 'Folder updated' : r.reason); loadShip(p.id, false); } } }, 'Update folder now') : null),
+    h('p', { class: 'mono t2', text: p.repo_path }),
+    h('p', { class: 'status' }, lamp(f && f.branch === p.base_branch && !f.behind && !f.dirty && !f.ahead ? 'ok' : f ? 'wait' : ''), folderLine));
+
+  // GitHub card
+  let gh;
+  if (!d) gh = h('p', { class: c.error ? 'note-bad' : 'muted', text: c.error || 'Checking GitHub' });
+  else if (!d.remote) {
+    const input = h('input', { type: 'text', class: 'mono', placeholder: 'https://github.com/you/repo.git', 'aria-label': 'GitHub repo URL', spellcheck: 'false' });
+    gh = [h('p', { class: 't2', text: 'No GitHub repo connected. Create an empty repo on github.com, then paste its URL' }),
+      h('div', { style: 'display:flex; gap:8px' }, h('div', { class: 'grow field' }, input),
+        h('button', { class: 'btn', onclick: async () => { if (await post(`/api/projects/${p.id}/github`, { url: input.value })) { toast('GitHub repo connected'); loadShip(p.id); } } }, 'Connect'))];
+  } else {
+    const n = d.aheadCount;
+    const line = d.fetchError ? h('p', { class: 'note-bad', text: 'Could not reach GitHub: ' + d.fetchError })
+      : d.behind ? h('p', { class: 'note-bad', text: `GitHub has ${d.behind} commit(s) Local does not have. Pushing is blocked so nothing on GitHub is overwritten` })
+      : !n ? h('p', { class: 'status' }, lamp('ok'), 'GitHub is up to date')
+      : h('p', { class: 't2', text: `${n} commit${n > 1 ? 's' : ''} on Local's main that GitHub does not have` });
+    const confirming = shipConfirm === p.id;
+    gh = [h('p', { class: 'mono t2', text: d.remote }), line,
+      n && !d.behind && !d.fetchError ? h('div', { class: 'ship-commits' }, d.ahead.slice(0, 10).map((x) => h('div', { class: 'c' }, h('span', { class: 'mono muted', text: x.sha.slice(0, 8) }), h('span', { class: 'ellipsis', text: x.subject }))),
+        n > 10 ? h('div', { class: 'c' }, h('span'), h('span', { class: 'muted', text: `+${n - 10} more` })) : null) : null,
+      h('div', { style: 'display:flex; gap:8px; align-items:center; flex-wrap:wrap' },
+        confirming
+          ? [h('button', { class: 'btn primary', onclick: async () => {
+                shipConfirm = null;
+                const r = await post(`/api/projects/${p.id}/push`, { sha: d.local });
+                if (r) toast(`Pushed ${r.pushed} commit${r.pushed > 1 ? 's' : ''} to GitHub`);
+                loadShip(p.id);
+              } }, icon('ship'), `Confirm: push ${n} to ${p.base_branch}`),
+             h('button', { class: 'btn ghost', onclick: () => { shipConfirm = null; renderShip(); } }, 'Cancel'),
+             h('span', { class: 'muted', style: 'font-size:13px', text: 'Fast-forward only. Uses your own git sign-in' })]
+          : h('button', { class: 'btn primary', disabled: !d.canPush || !!c.loading, onclick: () => { shipConfirm = p.id; renderShip(); } }, icon('ship'), n ? `Push ${n} commit${n > 1 ? 's' : ''} to GitHub` : 'Push to GitHub'))];
+  }
+  put($('v-ship'), h('div', { class: 'narrow' },
+    h('div', { style: 'display:flex; align-items:center; gap:16px' }, h('h1', { class: 'grow', text: 'Ship' }), recheck),
+    folderCard,
+    h('div', { class: 'card form' }, h('h2', { text: 'GitHub' }), gh),
+    h('div', { style: 'display:flex; align-items:baseline; gap:12px' }, h('h2', { text: 'Local merge history' }), h('span', { class: 'mono muted', text: String(merged.length) })),
+    merged.length ? h('div', { class: 'card', style: 'overflow:auto' }, h('table', {},
+      h('thead', {}, h('tr', {}, ['Task', 'Plan', 'PR', 'Merge commit', 'Status'].map((x) => h('th', { text: x })))),
+      h('tbody', {}, merged.map((t) => h('tr', {},
+        h('td', {}, h('button', { class: 'btn ghost project-link', onclick: () => go({ view: 'run', selTask: t.id }), text: t.title })), h('td', { class: 'mono t2', text: 'v' + (planFor(t.plan_id)?.version ?? '') }),
+        h('td', { class: 'mono t2', text: t.pr_number ? '#' + t.pr_number : '' }), h('td', { class: 'mono', text: short(t.merge_sha) }), h('td', {}, statusEl(t.status)))))))
+      : h('p', { class: 'muted', text: 'Nothing merged yet' })));
+}
+
+// ----- Projects -----
+function renderProjects() {
+  put($('ptable'), ...(state.projects.length ? state.projects.map((p) => h('tr', { class: p.id === current ? 'sel' : '' },
+    h('td', {}, h('button', { class: 'btn ghost project-link', 'aria-pressed': String(p.id === current),
+      onclick: () => go({ current: p.id, selTask: null }), text: p.name })),
+    h('td', { style: 'max-width:420px; padding-top:8px; padding-bottom:8px' },
+      h('div', { class: 'mono ellipsis', title: p.repo_path, text: p.repo_path }),
+      h('div', { class: 'mono ellipsis', style: 'color:' + (p.origin_error ? '#f08a8d' : 'var(--muted)'), title: p.origin || p.origin_error,
+        text: p.origin ? 'merges land in ' + p.origin : p.origin_error || '' })),
+    h('td', { class: 't2', text: projectStatus(p)[0] || 'Idle' }),
+    h('td', { class: 'mono', style: 'white-space:nowrap', text: `${running(p.id)} of ${p.max_workers}` + (p.paused ? ' · paused' : '') })))
+    : [h('tr', {}, h('td', { colspan: '4', class: 'muted', text: 'No projects yet' }))]));
+  const p = proj();
+  $('settingsForm').hidden = !p;
+  if (p && (settingsFor !== p.id || !$('settingsForm').contains(document.activeElement))) {
+    settingsFor = p.id;
+    $('settingsTitle').textContent = `Settings for ${p.name}`;
+    $('sCi').value = p.ci_command; $('sWorkers').value = p.max_workers;
+  }
+  if (document.activeElement !== $('gWorkers')) $('gWorkers').value = state.settings.find((s) => s.key === 'global_max_workers')?.value ?? 4;
+}
+
+// ---------- wiring ----------
+$('clearChat').onclick = async () => {
+  const project = proj();
+  if (!project || !window.confirm(`Delete the chat messages for ${project.name}? Plans and task history will stay.`)) return;
+  if (await post(`/api/projects/${encodeURIComponent(project.id)}/clear-chat`)) {
+    toast(`Cleared chat for ${project.name}`);
+    refresh();
+  }
+};
+$('send').onclick = () => sendRequest(draftProjectId, $('chatIn').value);
+$('chatIn').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendRequest(draftProjectId, $('chatIn').value); } });
+$('roadmapEditor').onsubmit = async (e) => {
+  e.preventDefault();
+  const projectId = draftProjectId;
+  const text = $('roadmapText').value;
+  if (!projectId) return;
+  const r = await post(`/api/projects/${encodeURIComponent(projectId)}/roadmap`, { text });
+  if (r) {
+    toast(`${r.length} phase${r.length > 1 ? 's' : ''} added to ${state.projects.find((p) => p.id === projectId)?.name ?? projectId}`);
+    if (clearSubmittedDraft(projectId, 'roadmap', 'roadmapText', text)) $('roadmapEditor').hidden = true;
+    refresh();
+  }
+};
+$('roadmapCancel').onclick = () => { $('roadmapEditor').hidden = true; };
+$('goAdd').onclick = () => { go({ view: 'projects' }); $('aPath').focus(); };
+$('hPause').onclick = async () => {
+  const p = proj();
+  if (p && await post(`/api/projects/${p.id}/pause`, { paused: !p.paused })) { toast(p.paused ? 'Dispatch resumed' : 'Dispatch paused. Running work continues'); refresh(); }
+};
+$('settingsForm').onsubmit = async (e) => {
+  e.preventDefault(); const p = proj(); if (!p) return;
+  if (await post(`/api/projects/${p.id}/config`, { ciCommand: $('sCi').value, maxWorkers: Number($('sWorkers').value) })) { toast('Settings saved'); document.activeElement.blur(); refresh(); }
+};
+$('addForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const r = await post('/api/projects', { path: $('aPath').value.trim(), name: $('aName').value.trim() || undefined, ciCommand: $('aCi').value.trim(),
+    maxWorkers: Number($('aWorkers').value), createOrigin: $('aCreate').checked });
+  if (r) { toast(`Added ${r.name}`); $('aPath').value = ''; $('aName').value = ''; current = r.id; view = 'plan'; writeHash(); refresh(); }
+};
+$('globalForm').onsubmit = async (e) => {
+  e.preventDefault();
+  if (await post('/api/settings/global', { globalMaxWorkers: Number($('gWorkers').value) })) { toast('Limit saved'); document.activeElement.blur(); refresh(); }
+};
+document.addEventListener('keydown', (e) => {
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+  if (e.key === 'Escape' && typing) return e.target.blur();
+  if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
+  const i = Number(e.key);
+  if (i >= 1 && i <= VIEWS.length) { e.preventDefault(); go({ view: VIEWS[i - 1][0] }); }
+  if (e.key === '/' && proj()) { e.preventDefault(); go({ view: 'plan' }); $('chatIn').focus(); }
+});
+window.addEventListener('hashchange', () => { readHash(); render(); });
+window.addEventListener('resize', () => requestAnimationFrame(drawEdges));
+setInterval(() => { if (proj() && ['overview', 'board'].includes(view) && !document.hidden) render(); }, 30000);
+setInterval(() => { const c = $('clock'); if (c?.isConnected) c.textContent = fmtClock(Date.now() - Number(c.dataset.start)); }, 1000);
+
+// EventSource resends Last-Event-ID on reconnect; the server replays strictly after it.
+const es = new EventSource('/api/events');
+es.onopen = () => { $('conn').className = 'conn on'; $('connText').textContent = 'Live'; };
+es.onerror = () => { $('conn').className = 'conn'; $('connText').textContent = 'Reconnecting'; };
+es.onmessage = (m) => {
+  const e = JSON.parse(m.data); try { e.d = JSON.parse(e.data); } catch { e.d = {}; } events.push(e); soon();
+  if (['task_merged', 'folder_synced', 'pushed_to_github'].includes(e.type) && shipCache[e.project_id] && Date.now() - (shipCache[e.project_id].at || 0) > 2000) {
+    if (view === 'ship' && e.project_id === current) loadShip(e.project_id, false); else delete shipCache[e.project_id];
+  }
+};
+readHash();
+refresh();
+</script>
+</body>
+</html>

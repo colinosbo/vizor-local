@@ -1,0 +1,24 @@
+{
+  "name": "vizor-local",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Proof of concept for Local (Vizor): orchestrated Claude Code workers with checked merges",
+  "type": "module",
+  "bin": {
+    "vizor-local": "dist/src/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "typecheck": "tsc -p . --noEmit",
+    "test": "npm run build && node --disable-warning=ExperimentalWarning --test --test-concurrency=1 dist/test/*.test.js",
+    "demo": "npm run build && node --disable-warning=ExperimentalWarning dist/src/cli.js demo",
+    "serve": "npm run build && node --disable-warning=ExperimentalWarning dist/src/cli.js serve"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3"
+  }
+}
