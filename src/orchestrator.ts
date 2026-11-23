@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { killTree } from './forge.js';
 import { git } from './git.js';
-import type { PlanBody, Project } from './types.js';
+import { isModelDefault, type PlanBody, type Project } from './types.js';
 
 /**
  * The orchestrator turns a feature request into a DRAFT plan. It cannot approve plans,
@@ -61,6 +61,15 @@ export function planningNote(j: any): string | null {
   return null;
 }
 
+/** Planner CLI argv. A project planner_model of 'sonnet' or 'opus' adds --model; 'auto' lets the CLI choose. */
+export function plannerArgs(project: Pick<Project, 'planner_model'>, prompt: string, preArgs: string[] = []): string[] {
+  const args = [...preArgs, '-p', prompt, '--output-format', 'stream-json', '--verbose',
+    '--json-schema', JSON.stringify(PLAN_SCHEMA), '--permission-mode', 'default', '--allowedTools', 'Read', 'Glob', 'Grep'];
+  const model = project.planner_model;
+  if (isModelDefault(model) && model !== 'auto') args.push('--model', model);
+  return args;
+}
+
 /**
  * Claude Code CLI in print mode, read-only tools, streamed so the dashboard can show progress.
  * The final `result` line carries `structured_output` (verified with --output-format json on 2.1.328);
@@ -70,8 +79,7 @@ export class ClaudeOrchestrator implements Orchestrator {
   constructor(private bin = 'claude', private preArgs: string[] = [], private timeoutMs = 10 * 60_000) {}
   draft(project: Project, request: string, onProgress?: Progress) {
     const files = git(project.repo_path, ['ls-files']).split('\n').slice(0, 300).join('\n');
-    const args = [...this.preArgs, '-p', plannerPrompt(project, files, request), '--output-format', 'stream-json', '--verbose',
-      '--json-schema', JSON.stringify(PLAN_SCHEMA), '--permission-mode', 'default', '--allowedTools', 'Read', 'Glob', 'Grep'];
+    const args = plannerArgs(project, plannerPrompt(project, files, request), this.preArgs);
     return new Promise<{ reply: string; plan: PlanBody }>((resolve, reject) => {
       const c = spawn(this.bin, args, { cwd: project.repo_path, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
       let err = '', result: any = null, toolPayload: any = null, timedOut = false;

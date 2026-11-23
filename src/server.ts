@@ -9,7 +9,8 @@ import { planCancel } from './cancel.js';
 import { resolveLocalOrigin } from './forges.js';
 import { approvePlan, PlanInFlightError } from './plan.js';
 import type { PlanningService } from './planning.js';
-import { addProject, configureProject } from './projects.js';
+import { addProject, configureProject, MODEL_DEFAULT_ERROR } from './projects.js';
+import { isModelDefault } from './types.js';
 import type { RoadmapService } from './roadmap.js';
 import { EMPTY_SETUP, projectSetup } from './setup.js';
 import { clearOverride, overrideFinding, PushBlockedError, pushNow, pushToGithub, setGithubRemote, shipStatus } from './ship.js';
@@ -188,9 +189,12 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
         if (a === 'projects' && action === 'config') {
           // autoApprove is strict: only a JSON boolean is accepted ("true", 1 etc. are rejected).
           if (body.autoApprove !== undefined && typeof body.autoApprove !== 'boolean') return json(res, 400, { error: 'autoApprove must be true or false' });
+          for (const field of ['planner_model', 'worker_model'] as const) {
+            if (body[field] !== undefined && !isModelDefault(body[field])) return json(res, 400, { error: MODEL_DEFAULT_ERROR(field) });
+          }
           return json(res, 200, configureProject(db, id, { ciCommand: body.ciCommand !== undefined ? String(body.ciCommand) : undefined,
             maxWorkers: body.maxWorkers !== undefined ? Number(body.maxWorkers) : undefined, autoPush: body.autoPush !== undefined ? !!body.autoPush : undefined,
-            autoApprove: body.autoApprove }));
+            autoApprove: body.autoApprove, plannerModel: body.planner_model, workerModel: body.worker_model }));
         }
         if (a === 'projects' && action === 'auto-approve-resume') { (opts.roadmap ?? fail('roadmap not enabled')).resumeAutoApprove(id); return json(res, 200, { ok: true }); }
         if (a === 'phases' && action === 'approve-mode') return json(res, 200, (opts.roadmap ?? fail('roadmap not enabled')).setApproveMode(Number(id), body.mode));

@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import type { ModelChoice, TaskRow } from './types.js';
+import type { ModelChoice, ModelDefault, TaskRow } from './types.js';
 
 export interface WorkerEvent { kind: 'text' | 'tool' | 'command' | 'result' | 'stderr' | 'system'; text: string }
 
@@ -29,10 +29,12 @@ export interface WorkerHandle {
 
 /**
  * Which model runs an attempt. The planner picks per task (default sonnet).
- * A repair means CI already failed once, so it escalates to opus.
+ * A project worker default of 'sonnet' or 'opus' replaces the planner's pick; 'auto' (or absent) keeps it.
+ * A repair means CI already failed once, so it escalates to opus either way.
  */
-export function modelFor(task: Pick<TaskRow, 'model'>, kind: 'initial' | 'repair' | 'retry'): ModelChoice {
+export function modelFor(task: Pick<TaskRow, 'model'>, kind: 'initial' | 'repair' | 'retry', projectDefault: ModelDefault = 'auto'): ModelChoice {
   if (kind === 'repair') return 'opus';
+  if (projectDefault !== 'auto') return projectDefault;
   return task.model === 'opus' ? 'opus' : 'sonnet';
 }
 

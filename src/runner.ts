@@ -9,7 +9,7 @@ import { allPaths, commitAll, ensureWorktree, hasUncommitted, push, revParse, ta
 import { evaluateMerge } from './merge.js';
 import { SUPERSEDED_HOLD } from './plan.js';
 import { inScope, scopesOverlap } from './scope.js';
-import { DEFAULT_CI, IN_FLIGHT, REQUIRED_CHECK, TRUSTED_WORKFLOW, taskMarker, type AttemptRow, type Check, type Project, type TaskRow } from './types.js';
+import { DEFAULT_CI, IN_FLIGHT, isModelDefault, REQUIRED_CHECK, TRUSTED_WORKFLOW, taskMarker, type AttemptRow, type Check, type Project, type TaskRow } from './types.js';
 import { modelFor, type WorkerFactory, type WorkerHandle } from './workers.js';
 import { claudeUsageRetryAt } from './usage-limit.js';
 
@@ -371,7 +371,8 @@ export class Runner {
       this.setTask(t.id, { worktree: wt });
       this.ev(t, 'worktree_ready', { path: wt, branch: t.branch, created, baseSha }, attemptId);
       const n = (this.db.prepare('SELECT COUNT(*) AS n FROM attempts WHERE task_id=?').get(t.id) as { n: number }).n;
-      const model = modelFor(t, a.kind);
+      const model = modelFor(t, a.kind, isModelDefault(p.worker_model) ? p.worker_model : 'auto');
+      this.db.prepare('UPDATE attempts SET model=? WHERE id=?').run(model, attemptId);
       const handle = this.workers.start({
         model, task: t, attemptId, attemptNumber: n, kind: a.kind, worktree: wt, prompt: buildPrompt(t, a.kind, p.ci_command),
         sessionId: a.session_id!, resumeSessionId: a.kind === 'repair' ? t.last_session_id ?? undefined : undefined, timeoutMs: this.o.timeoutMs,

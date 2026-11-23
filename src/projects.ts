@@ -5,7 +5,9 @@ import { emit } from './events.js';
 import { resolveLocalOrigin } from './forges.js';
 import { git, revParse } from './git.js';
 import { DENYLIST_GITIGNORE } from './push-guard.js';
-import { DEFAULT_CI, type Project } from './types.js';
+import { DEFAULT_CI, isModelDefault, MODEL_DEFAULTS, type ModelDefault, type Project } from './types.js';
+
+export const MODEL_DEFAULT_ERROR = (field: string) => `${field} must be one of ${MODEL_DEFAULTS.join(', ')}`;
 
 export function canonicalPath(p: string): string {
   const r = realpathSync.native(p);
@@ -71,10 +73,16 @@ export function addProject(db: DB, repoPath: string, opts: AddProjectOpts = {}):
 }
 
 /** Owner-only project settings. */
-export function configureProject(db: DB, id: string, c: { ciCommand?: string; maxWorkers?: number; forgeOrigin?: string | null; autoPush?: boolean; autoApprove?: boolean }): Project {
+export function configureProject(db: DB, id: string, c: { ciCommand?: string; maxWorkers?: number; forgeOrigin?: string | null; autoPush?: boolean; autoApprove?: boolean;
+  plannerModel?: ModelDefault; workerModel?: ModelDefault }): Project {
   const p = db.prepare('SELECT * FROM projects WHERE id=?').get(id) as unknown as Project | undefined;
   if (!p) throw new Error(`unknown project ${id}`);
   if (c.autoApprove !== undefined && typeof c.autoApprove !== 'boolean') throw new Error('autoApprove must be true or false');
+  // Validate both before writing either, so a bad value never leaves a half-applied update.
+  if (c.plannerModel !== undefined && !isModelDefault(c.plannerModel)) throw new Error(MODEL_DEFAULT_ERROR('planner_model'));
+  if (c.workerModel !== undefined && !isModelDefault(c.workerModel)) throw new Error(MODEL_DEFAULT_ERROR('worker_model'));
+  if (c.plannerModel !== undefined) db.prepare('UPDATE projects SET planner_model=? WHERE id=?').run(c.plannerModel, id);
+  if (c.workerModel !== undefined) db.prepare('UPDATE projects SET worker_model=? WHERE id=?').run(c.workerModel, id);
   // Takes effect immediately: RoadmapService re-reads this column on every tick and approves synchronously,
   // so there is never a queued auto-approval left to survive turning it off.
   if (c.autoApprove !== undefined) db.prepare('UPDATE projects SET auto_approve=? WHERE id=?').run(c.autoApprove ? 1 : 0, id);

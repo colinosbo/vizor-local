@@ -18,6 +18,14 @@ export interface PlanTask {
 export type ModelChoice = 'opus' | 'sonnet';
 export const MODEL_CHOICES: ModelChoice[] = ['opus', 'sonnet'];
 
+/** Per-project default: 'auto' keeps the per-task behaviour; a model name pins every task (or the planner) to it. */
+export type ModelDefault = 'auto' | ModelChoice;
+export const MODEL_DEFAULTS: readonly ModelDefault[] = ['auto', ...MODEL_CHOICES];
+
+export function isModelDefault(v: unknown): v is ModelDefault {
+  return typeof v === 'string' && (MODEL_DEFAULTS as readonly string[]).includes(v);
+}
+
 export interface PlanBody {
   summary: string;
   tasks: PlanTask[];
@@ -34,6 +42,8 @@ export interface Project {
   auto_approve?: number;        // 1 = RoadmapService may approve roadmap plans that pass autoApproveDecision
   auto_approve_halted?: string | null; // set when a task failed/blocked; nothing auto-approves until the owner resumes
   ci_command: string;           // trusted CI command, run by the shell in a clean clone of the exact SHA
+  planner_model?: ModelDefault; // 'auto' = planner CLI picks its own model
+  worker_model?: ModelDefault;  // 'auto' = each task's planner pick (default sonnet)
 }
 
 export const DEFAULT_CI = 'node --test';
@@ -55,6 +65,7 @@ export interface AttemptRow {
   status: string; session_id: string | null; repair_key: string | null;
   base_sha: string | null; pid: number | null; exit_code: number | null; reason: string | null;
   ended_at: string | null;
+  model?: ModelChoice | null;     // model that ran this attempt; null for attempts from older builds
 }
 
 export interface Check {
