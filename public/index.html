@@ -161,6 +161,7 @@
   .rm-mode.manual { color:var(--text); border-color:var(--text-2); }
   .rm-mode:hover { color:var(--text); }
   .rm-need { color:var(--text); font-size:12px; line-height:16px; overflow-wrap:anywhere; }
+  .rm-note { color:var(--muted); font-size:12px; line-height:16px; overflow-wrap:anywhere; }
   .rm-err { grid-column:3 / -1; font-size:12px; line-height:16px; color:#f08a8d; padding-bottom:8px; overflow-wrap:anywhere; }
   .ship-commits { display:flex; flex-direction:column; border:1px solid var(--line); border-radius:8px; background:var(--deep); padding:4px 0; }
   .ship-commits .c { display:grid; grid-template-columns:104px minmax(0,1fr); align-items:center; gap:12px; height:32px; padding:0 16px; font-size:13px; }
@@ -1430,6 +1431,8 @@ function roadmapCard(p) {
             onclick: () => rmCall(ph.id, `/api/phases/${ph.id}/approve-mode`, { mode: 'off' }, 'mode:' + ph.id) }, 'auto')) : null,
         ph.status === 'review' && ph.plan_id ? h('button', { class: 'btn', onclick: () => { selPlan[p.id] = ph.plan_id; selNode = null; renderPlan(); } }, 'Review plan') : null,
         ph.status === 'failed' ? h('button', { class: 'btn', onclick: async () => { if (await post(`/api/phases/${ph.id}/retry`)) refresh(); } }, icon('retry'), 'Retry') : null,
+        ph.status === 'running' && !state.tasks.some((t) => t.plan_id === ph.plan_id && !['merged', 'cancelled'].includes(t.status))
+          ? h('button', { class: 'btn', type: 'button', 'data-mark-done': '', onclick: async () => { if (await post(`/api/phases/${ph.id}/mark-done`)) { toast('Phase marked done'); refresh(); } } }, 'Mark done') : null,
         isQueued ? [
           btn({ 'data-rm-move': 'up', 'data-rm-key': 'up:' + ph.id, 'aria-label': `Move ${ph.title} up`, title: 'Move up', disabled: qi === 0, onclick: () => move(ph.position - 1, 'up') }, 'up'),
           btn({ 'data-rm-move': 'down', 'data-rm-key': 'down:' + ph.id, 'aria-label': `Move ${ph.title} down`, title: 'Move down', disabled: qi === queued.length - 1, onclick: () => move(ph.position + 1, 'down') }, 'down'),
@@ -1449,7 +1452,8 @@ function roadmapCard(p) {
         h('button', { class: 'btn primary', type: 'button', 'data-rm-key': 'confirm-keep:' + ph.id, onclick: () => { rmUi.confirm = null; rmRerender('remove:' + ph.id); } }, 'Keep phase'),
         h('button', { class: 'btn', type: 'button', 'data-rm-confirm-remove': '', onclick: remove }, 'Remove and discard plan')) : null;
       const need = ph.status === 'review' && ph.auto_note ? h('p', { class: 'rm-need', 'data-auto-note': '', text: `Needs you: ${ph.auto_note}` }) : null;
-      if (err || confirm || need) rows.push(h('div', { class: 'rm-sub' }, need, confirm, err));
+      const note = ph.status === 'done' && ph.done_note ? h('p', { class: 'rm-note', 'data-done-note': '', text: `Done: ${ph.done_note}` }) : null;
+      if (err || confirm || need || note) rows.push(h('div', { class: 'rm-sub' }, need, note, confirm, err));
     }
   });
   rows.push(rmInsertGap(p, phs.length + 1));
