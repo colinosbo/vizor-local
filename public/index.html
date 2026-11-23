@@ -495,6 +495,8 @@
           <label class="field"><span>Workers</span><input type="number" id="sWorkers" min="1" max="6"></label>
           <label class="check"><input type="checkbox" id="sAutoPush">Push to GitHub when every task has merged</label>
           <small class="muted" style="font-size:12px; line-height:16px; margin-top:-8px">Runs after each plan or roadmap phase finishes. Fast-forward only, never forces. Needs a GitHub repo connected in Ship</small>
+          <label class="check" id="sNotifyRow"><input type="checkbox" id="sNotify">Desktop notifications</label>
+          <small class="muted" id="sNotifyHint" style="font-size:12px; line-height:16px; margin-top:-8px">When a plan is ready for review, a task is held, a plan fully merges or a push fails. Saved in this browser right away</small>
           <div><button class="btn" type="submit">Save settings</button></div>
         </form>
         <form class="card form" id="addForm">
@@ -698,6 +700,57 @@ function go(patch) {
   if ('current' in patch && view === 'plan') $('thread').scrollTop = $('thread').scrollHeight;
 }
 
+// ---------- desktop notifications: opt-in per project, stored in this browser ----------
+const canNotify = 'Notification' in window;
+const notifyKey = (pid) => 'vizor.notify.' + pid;
+// Off unless the owner ticked the box for this project and the browser still grants permission.
+function notifyOn(pid) {
+  if (!canNotify || !pid || Notification.permission !== 'granted') return false;
+  try { return localStorage.getItem(notifyKey(pid)) === '1'; } catch { return false; }
+}
+function setNotify(pid, on) {
+  try { if (on) localStorage.setItem(notifyKey(pid), '1'); else localStorage.removeItem(notifyKey(pid)); } catch { /* storage unavailable */ }
+}
+// The four facts worth interrupting the owner for, keyed by entity id plus status. Routine progress is never listed.
+function notifyFacts(st) {
+  const out = [];
+  const name = (pid) => st.projects.find((p) => p.id === pid)?.name ?? pid;
+  for (const p of st.projects) {
+    const plans = st.plans.filter((pl) => pl.project_id === p.id);
+    for (const pl of plans) if (pl.status === 'draft')
+      out.push({ key: `plan:${pl.id}:draft`, pid: p.id, view: 'plan', title: 'Plan ready for review', body: `${p.name}: plan v${pl.version} is waiting for approval` });
+    const active = plans.find((pl) => pl.status === 'approved');
+    const planTasks = active ? st.tasks.filter((t) => t.plan_id === active.id && t.status !== 'cancelled') : [];
+    if (planTasks.length && planTasks.every((t) => t.status === 'merged'))
+      out.push({ key: `plan:${active.id}:merged`, pid: p.id, view: 'overview', title: 'Plan merged', body: `${p.name}: all ${planTasks.length} task${planTasks.length === 1 ? '' : 's'} in plan v${active.version} merged` });
+    if (p.auto_push_error)
+      out.push({ key: `push:${p.id}:${p.auto_pushed_sha ?? ''}:failed`, pid: p.id, view: 'overview', title: 'Push to GitHub failed', body: `${p.name}: ${p.auto_push_error}` });
+  }
+  for (const t of st.tasks) if (t.status === 'blocked')
+    out.push({ key: `task:${t.id}:blocked`, pid: t.project_id, view: 'run', selTask: t.id, title: 'Task held', body: `${name(t.project_id)}: ${t.title}` });
+  return out;
+}
+let notifyPrev = null; // fact keys from the previous refresh; null until the first load seeds it
+const notified = new Set(); // each entity+status notifies at most once per session
+function notifyTransitions(st) {
+  const facts = notifyFacts(st);
+  const prev = notifyPrev;
+  notifyPrev = new Set(facts.map((f) => f.key));
+  if (!prev || !canNotify) return; // first load only seeds the snapshot
+  for (const f of facts) {
+    if (prev.has(f.key) || notified.has(f.key) || !notifyOn(f.pid)) continue;
+    notified.add(f.key);
+    try {
+      const n = new Notification(f.title, { body: f.body, tag: f.key });
+      n.onclick = () => {
+        window.focus(); n.close();
+        go({ current: f.pid }); // switch project first so the saved last view cannot override the target
+        go(f.selTask ? { view: f.view, selTask: f.selTask } : { view: f.view });
+      };
+    } catch { /* some browsers only allow notifications from a service worker */ }
+  }
+}
+
 // ---------- data ----------
 async function refresh() {
   const r = await fetch('/api/state').catch(() => null);
@@ -708,6 +761,7 @@ async function refresh() {
     return;
   }
   state = await r.json();
+  notifyTransitions(state);
   if (!state.projects.some((p) => p.id === current)) current = state.projects[0]?.id ?? null;
   if (hashIsDefault) {
     hashIsDefault = false;
@@ -1732,6 +1786,7 @@ function renderProjects() {
     settingsFor = p.id;
     $('settingsTitle').textContent = `Settings for ${p.name}`;
     $('sCi').value = p.ci_command; $('sWorkers').value = p.max_workers; $('sAutoPush').checked = !!p.auto_push;
+    $('sNotify').checked = notifyOn(p.id);
   }
   if (document.activeElement !== $('gWorkers')) $('gWorkers').value = state.settings.find((s) => s.key === 'global_max_workers')?.value ?? 4;
 }
@@ -1777,6 +1832,21 @@ async function togglePause() {
 $('settingsForm').onsubmit = async (e) => {
   e.preventDefault(); const p = proj(); if (!p) return;
   if (await post(`/api/projects/${p.id}/config`, { ciCommand: $('sCi').value, maxWorkers: Number($('sWorkers').value), autoPush: $('sAutoPush').checked })) { toast('Settings saved'); document.activeElement.blur(); refresh(); }
+};
+$('sNotifyRow').hidden = $('sNotifyHint').hidden = !canNotify;
+// The only place permission is requested: when the owner ticks the box, never on load.
+$('sNotify').onchange = async (e) => {
+  const box = e.currentTarget, p = proj(); if (!p) return;
+  if (!box.checked) { setNotify(p.id, false); toast(`Desktop notifications off for ${p.name}`); return; }
+  const perm = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
+  if (perm !== 'granted') {
+    box.checked = false; setNotify(p.id, false);
+    toast(perm === 'denied'
+      ? 'The browser blocks notifications for this page. Allow them in its site settings, then tick the box again'
+      : 'Notifications need your permission. Tick the box again to be asked', true);
+    return;
+  }
+  setNotify(p.id, true); toast(`Desktop notifications on for ${p.name}`);
 };
 $('addForm').onsubmit = async (e) => {
   e.preventDefault();
