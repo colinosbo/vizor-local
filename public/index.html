@@ -182,6 +182,10 @@
   .btn.danger { background:none; border-color:color-mix(in srgb, #e5484d 45%, transparent); color:#f08a8d; }
   .btn.danger:hover { background:color-mix(in srgb, #e5484d 12%, transparent); }
   .guard .btn:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .guard .opt { display:flex; gap:8px; align-items:center; font-size:13px; color:var(--text); cursor:pointer; min-height:24px; }
+  .guard .opt input { margin:0; accent-color:var(--accent); }
+  .guard .opt input:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .guard li .arrow { color:var(--text-2); overflow-wrap:anywhere; white-space:normal; }
 
   .graph { background:var(--deep); border:1px solid var(--line); border-radius:12px; padding:16px; overflow:auto; }
   .lanes { position:relative; display:flex; gap:56px; align-items:flex-start; width:max-content; }
@@ -1816,7 +1820,8 @@ function taskCard(t) {
     held ? h('p', { class: 'cause', title: t.hold_reason || held.cause, text: held.cause }) : null,
     held && held.action ? h('div', {}, h('button', { class: 'btn', onclick: (e) => { e.stopPropagation(); held.action.run(); } }, icon(held.action.icon), held.action.label)) : null,
     canMergeAnyway(t) ? h('div', {}, h('button', { class: 'btn ghost', onclick: (e) => { e.stopPropagation(); openMergeAnyway(t); } }, icon('ship'), 'Merge anyway')) : null,
-    run ? h('div', {}, h('button', { class: 'btn ghost', onclick: (e) => { e.stopPropagation(); cancelRun(run); } }, icon('x'), 'Cancel run')) : null);
+    run ? h('div', {}, h('button', { class: 'btn ghost', onclick: (e) => { e.stopPropagation(); cancelRun(run); } }, icon('x'), 'Cancel run')) : null,
+    canCancelTask(t) ? h('div', {}, h('button', { class: 'btn ghost', onclick: (e) => { e.stopPropagation(); openCancelTask(t); } }, icon('x'), 'Cancel task')) : null);
 }
 // A held task's short cause and its one fix. Patterns mirror the hold_reason strings written by src/runner.ts and src/plan.ts.
 function holdSummary(t) {
@@ -1897,6 +1902,78 @@ function mergeAnywayPanel(t, st) {
       h('button', { class: 'btn danger', 'data-confirm': '', disabled: st.busy, onclick: confirm }, st.busy ? 'Merging' : 'Merge anyway')));
 }
 
+// ----- Cancel task: owner-only; opening the panel only previews (dryRun:true), nothing is cancelled until the owner confirms -----
+// Mirrors NOT_CANCELLABLE in src/cancel.ts.
+const canCancelTask = (t) => !!t && !['merged', 'merging', 'cancelled'].includes(t.status);
+let cancelTask = null; // { taskId, busy, error, reroute, loading, preview, loadPreview }
+function openCancelTask(t) {
+  const st = { taskId: t.id, busy: false, error: null, reroute: true, loading: true, preview: null, seq: 0 };
+  st.loadPreview = async () => {
+    const seq = ++st.seq;
+    st.loading = true; st.error = null; renderRun();
+    const j = await post(`/api/tasks/${encodeURIComponent(t.id)}/cancel`, { dryRun: true, reroute: st.reroute }, (m) => { if (seq === st.seq) st.error = m; });
+    if (seq !== st.seq || cancelTask !== st) return; // a newer request or a closed panel wins
+    st.loading = false;
+    if (j) st.preview = j;
+    renderRun();
+    if (document.activeElement === document.body) document.querySelector('.guard [data-default]')?.focus();
+  };
+  cancelTask = st;
+  if (view === 'run' && selTask === t.id) renderRun(); else go({ view: 'run', selTask: t.id });
+  document.querySelector('.guard [data-default]')?.focus();
+  st.loadPreview();
+}
+function closeCancelTask() {
+  if (cancelTask) cancelTask.seq++;
+  cancelTask = null;
+  renderRun();
+  document.querySelector('#run [data-cancel-task]')?.focus();
+}
+function cancelTaskPanel(t, st) {
+  const confirm = async () => {
+    st.seq++; // drop any preview still in flight
+    st.busy = true; st.error = null; renderRun();
+    const ok = await post(`/api/tasks/${encodeURIComponent(t.id)}/cancel`, { dryRun: false, reroute: st.reroute }, (m) => { st.error = m; });
+    st.busy = false;
+    if (ok) { cancelTask = null; toast(`Cancelled ${t.key}`); refresh(); }
+    else renderRun();
+  };
+  const pv = st.preview;
+  const blocked = pv && !pv.cancellable;
+  const deps = (a) => (a.length ? a.join(', ') : 'none');
+  let body;
+  if (blocked) body = h('p', { 'data-cancel-reason': '', text: pv.reason || `${t.key} cannot be cancelled` });
+  else if (!pv) body = st.error ? null : h('p', { class: 'muted', text: 'Checking what depends on this task' });
+  else {
+    const list = pv.reroutes || [];
+    body = [
+      st.reroute
+        ? (list.length
+          ? [h('p', { text: `Dependents move to the tasks ${t.key} was waiting on` }),
+            h('ul', { 'data-cancel-reroutes': '' }, list.map((r) => h('li', {}, h('span', { class: 'mono', text: r.key }), h('span', { class: 'arrow mono', text: `${deps(r.before)} → ${deps(r.after)}` }))))]
+          : h('p', { text: 'No other tasks depend on this one' }))
+        : h('p', { 'data-cancel-keep': '', text: `Dependents keep waiting on ${t.key}. Their dependencies stay as they are` }),
+    ];
+  }
+  const opt = h('label', { class: 'opt' },
+    h('input', { type: 'checkbox', 'data-reroute': '', checked: st.reroute, disabled: st.busy || blocked,
+      onchange: (e) => { st.reroute = e.target.checked; st.loadPreview().then(() => document.querySelector('.guard [data-reroute]')?.focus()); } }),
+    'Reroute dependents');
+  return h('div', { class: 'guard', role: 'alertdialog', 'aria-labelledby': 'ctTitle', 'aria-describedby': 'ctBody', 'aria-busy': String(st.busy || st.loading),
+    onkeydown: (e) => {
+      if (e.target.matches?.('input')) { if (e.key === 'Escape' && !st.busy) { e.preventDefault(); e.stopPropagation(); closeCancelTask(); } return; }
+      if (e.key === 'Escape' && !st.busy) { e.preventDefault(); e.stopPropagation(); closeCancelTask(); }
+      else if (e.key === 'Enter' && !e.target.hasAttribute('data-confirm') && !st.busy) { e.preventDefault(); e.stopPropagation(); closeCancelTask(); }
+    } },
+    h('h2', { id: 'ctTitle', text: `Cancel ${t.key}` }),
+    h('div', { id: 'ctBody', style: 'display:flex; flex-direction:column; gap:12px' }, body),
+    blocked ? null : opt,
+    st.error ? h('p', { class: 'note-bad', role: 'alert', 'data-cancel-error': '', text: st.error }) : null,
+    h('div', { class: 'acts' },
+      h('button', { class: 'btn primary', 'data-default': '', disabled: st.busy, onclick: closeCancelTask }, blocked ? 'Close' : 'Keep task'),
+      blocked ? null : h('button', { class: 'btn danger', 'data-confirm': '', disabled: st.busy || st.loading || !pv, onclick: confirm }, st.busy ? 'Cancelling' : 'Cancel task')));
+}
+
 // ----- Run -----
 function evText(e) {
   const d = e.d;
@@ -1961,12 +2038,14 @@ function renderRun() {
     h('div', { style: 'display:flex; align-items:center; gap:16px' }, h('h1', { class: 'grow', style: 'overflow-wrap:anywhere', text: t.title }),
       t.status === 'blocked' ? h('button', { class: 'btn', onclick: () => retry(t) }, icon('retry'), 'Retry task') : null,
       canMergeAnyway(t) && mergeAnyway?.taskId !== t.id ? h('button', { class: 'btn', 'data-merge-anyway': '', onclick: () => openMergeAnyway(t) }, icon('ship'), 'Merge anyway') : null,
-      active ? h('button', { class: 'btn ghost', onclick: () => cancelRun(active) }, icon('x'), 'Cancel run') : null),
+      active ? h('button', { class: 'btn ghost', onclick: () => cancelRun(active) }, icon('x'), 'Cancel run') : null,
+      canCancelTask(t) && cancelTask?.taskId !== t.id ? h('button', { class: 'btn ghost', 'data-cancel-task': '', onclick: () => openCancelTask(t) }, icon('x'), 'Cancel task') : null),
     h('div', { class: 'facts' }, statusEl(t.status),
       t.pr_number ? h('span', { class: 'mono' }, `PR #${t.pr_number}`, copyBtn(t.pr_number, 'PR number')) : null,
       t.repair_count ? h('span', { class: 'mono', text: `${t.repair_count} repair${t.repair_count > 1 ? 's' : ''}` }) : null),
     t.hold_reason && t.status !== 'merged' ? h('p', { class: t.status === 'blocked' ? 'hold' : 't2', text: t.hold_reason }) : null,
     canMergeAnyway(t) && mergeAnyway?.taskId === t.id ? mergeAnywayPanel(t, mergeAnyway) : null,
+    cancelTask?.taskId === t.id ? cancelTaskPanel(t, cancelTask) : null,
     atts.length ? h('div', { class: 'card', style: 'overflow:hidden' }, h('table', {},
       h('thead', {}, h('tr', {}, ['Attempt', 'Status', 'Exit', 'Started', 'Note'].map((x) => h('th', { text: x })))),
       h('tbody', {}, atts.map((a, i) => h('tr', {},
@@ -2215,6 +2294,7 @@ document.addEventListener('keydown', (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable;
   if (e.key === 'Escape' && typing) return e.target.blur();
   if (mergeAnyway && view === 'run' && e.key === 'Escape') return closeMergeAnyway();
+  if (cancelTask && !cancelTask.busy && view === 'run' && e.key === 'Escape') return closeCancelTask();
   if (approveGuard && e.key === 'Escape') return closeApproveGuard();
   if (e.target.closest?.('.guard')) return;
   if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -2246,6 +2326,7 @@ function paletteActions() {
   const auto = p.auto_approve === 1;
   return [
     t?.status === 'blocked' && { id: 'retry', label: 'Retry task', icon: 'retry', hint: t.title, keys: view === 'board' ? BOARD_KEYS.retry : null, run: () => retry(t) },
+    t && canCancelTask(t) && { id: 'cancel-task', label: 'Cancel task…', icon: 'x', hint: t.title, run: () => openCancelTask(t) },
     { id: 'push', label: 'Push to GitHub', icon: 'ship', hint: 'Confirm in Ship', disabled: ship && !ship.canPush ? 'Nothing to push' : null,
       run: () => { if (view !== 'ship') go({ view: 'ship' }); askPush(p.id); } },
     { id: 'pause', label: p.paused ? 'Resume dispatch' : 'Pause dispatch', icon: p.paused ? 'play' : 'pause', run: togglePause },
