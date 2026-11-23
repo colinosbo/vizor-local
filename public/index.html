@@ -313,6 +313,10 @@
   .tcard .meta { display:flex; flex-wrap:wrap; gap:4px 12px; color:var(--muted); min-width:0; white-space:nowrap; }
   .tcard .act { font-size:12px; line-height:16px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
   .tcard .el { font-variant-numeric:tabular-nums; color:var(--text-2); }
+  .tcard .mchip { display:inline-flex; align-items:center; padding:0 6px; border:1px solid var(--line-2); border-radius:4px; color:var(--text-2); font-size:12px; line-height:16px; }
+  .tcard .mchip:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .tcard.mini { flex-wrap:wrap; }
+  .tcard.mini .mmeta { flex:1 1 100%; display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; padding-left:16px; color:var(--muted); font-size:12px; line-height:16px; }
   .tcard .cause { font-size:13px; line-height:18px; color:var(--text-2); overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
 
   /* Card detail popover: one shared element, never takes pointer events so the card underneath stays clickable. */
@@ -2068,7 +2072,8 @@ function renderBoard() {
   const lanes = boardLanes(plans, shown);
   const openTask = (t) => ({ role: 'button', tabindex: '0', onclick: () => go({ view: 'run', selTask: t.id }),
     onkeydown: (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); go({ view: 'run', selTask: t.id }); } } });
-  const mini = (t) => h('div', { class: 'tcard mini', 'data-task': t.id, 'data-task-id': t.id, 'data-col': 'Merged', ...openTask(t) }, lamp('ok'), h('span', { class: 'ttl', title: t.pr_number ? `${t.title} (PR #${t.pr_number})` : t.title, text: t.title }));
+  const mini = (t) => h('div', { class: 'tcard mini', 'data-task': t.id, 'data-task-id': t.id, 'data-col': 'Merged', ...openTask(t) }, lamp('ok'), h('span', { class: 'ttl', title: t.pr_number ? `${t.title} (PR #${t.pr_number})` : t.title, text: t.title }),
+    h('div', { class: 'mmeta mono' }, modelChip(t), t.pr_number != null ? h('span', { class: 'merged-label', text: mergedLabel(t) }) : null));
   const before = snapshotBoardCards(p.id);
   put($('v-board'), header,
     h('div', { class: 'kanban' },
@@ -2142,6 +2147,19 @@ function animateColumnChanges(pid, before) {
 }
 // A held task's summary, or null when the task is not held. Shared by the card and the r shortcut.
 const heldOf = (t) => (t && t.status !== 'merged' && (t.status === 'blocked' || t.hold_reason) ? holdSummary(t) : null);
+// Model chip: the planner's pick, or 'default' when none. The reason rides on the tooltip and the aria-label; the chip is focusable so keyboard users can reach it.
+function modelChip(t) {
+  const model = t.model || 'default';
+  const why = t.model_why ? String(t.model_why) : '';
+  return h('span', { class: 'mchip mono', tabindex: '0', role: 'note', title: why || null,
+    'aria-label': why ? `Model ${model}: ${why}` : `Model ${model}`, text: model });
+}
+// Merged label from the task's updated_at (set when the task merged); the PR number alone when there is no timestamp.
+function mergedLabel(t) {
+  const when = t.updated_at ? sqlTime(t.updated_at) : null;
+  const pr = `PR #${t.pr_number}`;
+  return when && Number.isFinite(when.getTime()) ? `${pr} · merged ${ago(when)}` : pr;
+}
 function taskCard(t) {
   const [, kind] = STATUS[t.status] || [];
   const attempts = state.attempts.filter((a) => a.task_id === t.id);
@@ -2157,7 +2175,7 @@ function taskCard(t) {
   const held = heldOf(t);
   return h('div', { class: 'tcard', 'data-task': t.id, 'data-task-id': t.id, role: 'button', tabindex: '0', onclick: () => go({ view: 'run', selTask: t.id }), onkeydown: (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); go({ view: 'run', selTask: t.id }); } } },
     h('div', { class: 'top' }, lamp(kind), h('span', { class: 'grow', style: 'font-weight:500; overflow-wrap:anywhere', text: t.title }), INFO_OF[t.status] ? infoBtn(INFO_OF[t.status]) : null),
-    h('div', { class: 'meta mono' }, h('span', { class: 'ellipsis', text: t.key }),
+    h('div', { class: 'meta mono' }, h('span', { class: 'ellipsis', text: t.key }), modelChip(t),
       attempts.length ? h('span', { text: `attempt ${attempts.length}` }) : null,
       t.repair_count > 0 ? h('span', { text: `${t.repair_count} repair${t.repair_count > 1 ? 's' : ''}` }) : null,
       t.pr_number ? h('span', { text: `#${t.pr_number}` }) : null,
