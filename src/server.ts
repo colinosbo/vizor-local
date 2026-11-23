@@ -11,6 +11,7 @@ import { approvePlan, PlanInFlightError } from './plan.js';
 import type { PlanningService } from './planning.js';
 import { addProject, configureProject } from './projects.js';
 import type { RoadmapService } from './roadmap.js';
+import { EMPTY_SETUP, projectSetup } from './setup.js';
 import { pushNow, pushToGithub, setGithubRemote, shipStatus } from './ship.js';
 import { folderStatus, syncCheckout } from './sync.js';
 import type { Runner } from './runner.js';
@@ -96,8 +97,12 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
       if (req.method === 'GET' && url.pathname === '/api/state') {
         return json(res, 200, {
           projects: (db.prepare('SELECT * FROM projects ORDER BY created_at').all() as any[]).map((p) => {
-            try { return { ...p, origin: resolveLocalOrigin(p), origin_error: null }; }
-            catch (e) { return { ...p, origin: null, origin_error: String((e as Error).message ?? e) }; }
+            let row: any;
+            try { row = { ...p, origin: resolveLocalOrigin(p), origin_error: null }; }
+            catch (e) { row = { ...p, origin: null, origin_error: String((e as Error).message ?? e) }; }
+            let setup = EMPTY_SETUP;
+            try { setup = projectSetup(db, row); } catch { /* setup is advisory; never fail /api/state */ }
+            return { ...row, setup };
           }),
           plans: db.prepare('SELECT id, project_id, version, status, body FROM plans ORDER BY id').all(),
           tasks: db.prepare('SELECT * FROM tasks ORDER BY project_id, plan_id, rowid').all(),
