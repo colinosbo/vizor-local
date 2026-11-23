@@ -23,6 +23,8 @@ export interface Forge {
   triggerCi(sha: string): number;
   /** Squash-merge guarded by the exact verified head SHA. */
   merge(n: number, expectedHeadSha: string): string;
+  /** Close an open PR without merging; the branch is kept. Optional: forges without it leave the PR open. */
+  closePr?(n: number): void;
 }
 
 /** Resolves the forge for a project (one forge per project). Throws if the project has no usable forge. */
@@ -150,6 +152,10 @@ export class LocalForge implements Forge {
       this.db.prepare("UPDATE prs SET state='merged', merge_sha=? WHERE number=?").run(sha, n);
       return sha;
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  closePr(n: number) {
+    this.db.prepare("UPDATE prs SET state='closed' WHERE number=? AND state='open'").run(n);
   }
 
   close() { this.db.close(); }

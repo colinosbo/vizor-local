@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { planCancel } from './cancel.js';
 import type { DB } from './db.js';
 import { getSetting, tx } from './db.js';
 import { emit } from './events.js';
@@ -70,7 +71,9 @@ export class Runner {
   private ev(t: TaskRow, type: string, data: unknown = {}, attemptId?: string) {
     emit(this.db, { projectId: t.project_id, taskId: t.id, attemptId, type, data });
   }
+  private isCancelled(taskId: string) { return this.task(taskId)?.status === 'cancelled'; }
   private block(t: TaskRow, reason: string) {
+    if (this.isCancelled(t.id)) return; // an owner cancellation is final; late results never revive the task
     this.setTask(t.id, { status: 'blocked', hold_reason: reason });
     this.ev(t, 'task_blocked', { reason });
   }
@@ -114,6 +117,10 @@ export class Runner {
 
   private reconcileDead(a: AttemptRow) {
     const t = this.task(a.task_id);
+    if (t.status === 'cancelled') {
+      this.setAttempt(a.id, { status: 'cancelled', reason: 'task cancelled by owner', ended_at: 1 });
+      return;
+    }
     let pr = null;
     try { pr = this.f(t.project_id).findPrByMarker(taskMarker(t.id)); } catch { /* forge unavailable: treat as no PR, never relaunch blindly */ }
     const head = t.worktree ? revParse(t.worktree, 'HEAD') : null;
@@ -201,6 +208,7 @@ export class Runner {
 
   // ---------- merge ----------
   private tryMerge(t: TaskRow) {
+    if (this.task(t.id).status !== 'waiting_ci') return; // cancelled (or otherwise moved on) since it was read
     const p = this.project(t.project_id);
     const forge = this.f(t.project_id);
     const d = evaluateMerge(this.db, forge, t, p);
@@ -364,7 +372,9 @@ export class Runner {
       const res = await handle.done;
       this.handles.delete(attemptId);
       if (res.cancelled) {
-        this.setAttempt(attemptId, { status: 'cancelled', exit_code: res.exitCode, reason: 'cancelled by user', ended_at: 1 });
+        const byTask = this.isCancelled(t.id);
+        this.setAttempt(attemptId, { status: 'cancelled', exit_code: res.exitCode, reason: byTask ? 'task cancelled by owner' : 'cancelled by user', ended_at: 1 });
+        if (byTask) return;
         return this.block(this.task(t.id), 'attempt cancelled by user; Retry to run again');
       }
       // Persist the exit result before any further step, so a crash here resumes from 'exited'.
@@ -382,6 +392,11 @@ export class Runner {
     const a = this.attempt(attemptId);
     const t = this.task(a.task_id);
     const p = this.project(t.project_id);
+    if (t.status === 'cancelled') {
+      // Worker finished before the cancel signal reached it: record the attempt as cancelled, publish nothing.
+      this.setAttempt(a.id, { status: 'cancelled', reason: 'task cancelled by owner', ended_at: 1 });
+      return;
+    }
     if (a.exit_code !== 0) {
       const observedAt = a.ended_at ? Date.parse(a.ended_at.replace(' ', 'T') + 'Z') : Date.now();
       const retryAt = this.workers.name === 'claude-code' ? claudeUsageRetryAt(a.reason, observedAt) : null;
@@ -444,6 +459,44 @@ export class Runner {
     const a = this.attempt(attemptId);
     if (a && isAlive(a.pid)) process.kill(a.pid!, 'SIGTERM');
   }
+  /**
+   * Owner cancels one task. Status and dependency writes commit together; the live worker (if any)
+   * is signalled and the PR (if any) closed afterwards. Worktrees and branches are kept.
+   */
+  cancelTask(taskId: string, opts: { reroute?: boolean } = {}) {
+    const reroute = opts.reroute ?? true;
+    const { task: t, dependents, liveAttempts } = tx(this.db, () => {
+      const plan = planCancel(this.db, taskId);
+      if (!plan.cancellable) throw new Error(`cannot cancel: ${plan.reason}`);
+      const t = plan.task;
+      const attempts = this.db.prepare(`SELECT * FROM attempts WHERE task_id=? AND status IN ${ACTIVE_ATTEMPT}`).all(t.id) as unknown as AttemptRow[];
+      // Attempts this runner supervises end through launch()'s cancelled branch; the rest are closed here.
+      const liveAttempts = attempts.filter((a) => this.handles.has(a.id) || isAlive(a.pid));
+      for (const a of attempts) if (!this.handles.has(a.id)) this.setAttempt(a.id, { status: 'cancelled', reason: 'task cancelled by owner', ended_at: 1 });
+      this.setTask(t.id, { status: 'cancelled', hold_reason: 'cancelled by owner', usage_retry_at: null });
+      if (reroute) {
+        for (const r of plan.reroutes) {
+          this.db.prepare("UPDATE tasks SET deps=?, updated_at=datetime('now') WHERE plan_id=? AND key=?").run(JSON.stringify(r.after), t.plan_id, r.key);
+          const dep = this.db.prepare('SELECT * FROM tasks WHERE plan_id=? AND key=?').get(t.plan_id, r.key) as unknown as TaskRow;
+          this.ev(dep, 'task_deps_rerouted', { cancelled: t.key, before: r.before, after: r.after });
+        }
+      }
+      const dependents = plan.reroutes.map((r) => r.key);
+      this.ev(t, 'task_cancelled', { reroute, dependents, from: t.status });
+      return { task: t, dependents, liveAttempts };
+    });
+    for (const a of liveAttempts) this.cancel(a.id);
+    if (t.pr_number) {
+      try {
+        const forge = this.f(t.project_id);
+        if (forge.closePr) { forge.closePr(t.pr_number); this.ev(t, 'pr_closed', { pr: t.pr_number }); }
+      } catch (e) {
+        this.ev(t, 'pr_close_failed', { pr: t.pr_number, error: String((e as Error).message ?? e).slice(0, 300) });
+      }
+    }
+    return { task: this.task(t.id), dependents };
+  }
+
   retry(taskId: string) {
     const t = this.task(taskId);
     if (t.status !== 'blocked') throw new Error(`task is ${t.status}, not blocked`);
