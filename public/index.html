@@ -29,6 +29,11 @@
     --t-fast:140ms;  /* hover, press */
     --t-menu:200ms;  /* menus, popovers, toasts, disclosures */
     --t-view:320ms;  /* view changes */
+    /* Two documented exceptions, both outside the Phase 1 set on purpose:
+       --t-lamp is one half-cycle of the running lamp, the only loop; any Phase 1 value reads as flicker, not breath.
+       --t-stagger is the per-card offset on entering Home (at most six cards), so the cascade ends within --t-view. */
+    --t-lamp:1600ms;
+    --t-stagger:40ms;
     color-scheme: dark;
   }
   * { box-sizing:border-box; }
@@ -90,7 +95,9 @@
   .sitem .lbl { color:var(--muted); }
   .sitem .num { font-family:var(--mono); font-variant-numeric:tabular-nums; color:var(--text); }
   .sitem.attn .num { color:var(--accent); }
-  .sitem .lamp.live { animation:lamp-run 1600ms var(--ease) infinite alternate; }
+  /* The strip lamp keeps its 8px slot when idle (visibility, not display), so a worker starting never shifts the figures. */
+  .sitem .lamp.idle { visibility:hidden; }
+  .sitem .lamp.live { animation:lamp-run var(--t-lamp) var(--ease) infinite alternate; }
   @keyframes lamp-run { from { opacity:1; } to { opacity:.45; } }
   /* Narrow header: the words leave the screen but stay in the accessibility tree (same rules as .vh). */
   @media (max-width: 1100px) { header .sitem .lbl { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0 0 0 0); clip-path:inset(50%); white-space:nowrap; border:0; } }
@@ -428,7 +435,7 @@
   .pcard .pct { flex:none; width:40px; text-align:right; color:var(--text-2); }
   .pcard .bar { flex:1; min-width:0; }
   .pcard .act { position:relative; z-index:1; flex:none; }
-  .pcard.enter { animation:view-in var(--t-view) var(--ease) backwards; animation-delay:calc(var(--i) * 40ms); }
+  .pcard.enter { animation:view-in var(--t-view) var(--ease) backwards; animation-delay:calc(var(--i) * var(--t-stagger)); }
   /* Home: New project control and the first-launch start card. */
   .ov.first { align-items:center; justify-content:center; min-height:calc(100vh - 160px); }
   .ov.first #homeNew { width:100%; max-width:440px; display:flex; flex-direction:column; gap:16px; }
@@ -530,16 +537,17 @@
   @keyframes view-in { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
   .view.entering { animation:view-in var(--t-view) var(--ease); }
 
-  /* Board motion: only a card whose column changed moves. Opacity and transform only. */
+  /* Board motion: only a card whose column changed moves (animateColumnChanges), never a refresh of identical data.
+     Opacity and transform only. The arriving card rises like a view; the old slot fades out faster than it arrives. */
   @media (prefers-reduced-motion: no-preference) {
-    @keyframes col-in { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
     @keyframes col-out { from { opacity:1; } to { opacity:0; } }
     @keyframes lamp-merge { 0% { transform:scale(1); } 35% { transform:scale(1.7); } 100% { transform:scale(1); } }
-    .tcard.col-in { animation:col-in 220ms ease-out; }
-    .tcard.ghost { position:absolute; margin:0; pointer-events:none; animation:col-out 150ms ease-out forwards; }
-    .lamp.pulse { animation:lamp-merge 600ms ease-out; }
+    .tcard.col-in { animation:view-in var(--t-menu) var(--ease); }
+    .tcard.ghost { position:absolute; margin:0; pointer-events:none; animation:col-out var(--t-fast) var(--ease) forwards; }
+    .lamp.pulse { animation:lamp-merge var(--t-view) var(--ease); }
   }
 
+  /* Reduced motion: nothing moves. The running lamp stops on its full-opacity frame and stays a static orange square. */
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { transition:none !important; animation:none !important; scroll-behavior:auto !important; }
   }
@@ -577,7 +585,7 @@
     <div class="ov">
       <div class="ov-head" id="hHead"><h1>Home</h1></div>
       <div class="strip home-strip" id="hStrip" role="group" aria-label="Across projects">
-        <span class="sitem static"><span class="lamp live" id="hsLamp" hidden></span><span class="num" id="hsBusy"></span><span class="num" id="hsLimit"></span><span class="lbl">workers busy</span></span>
+        <span class="sitem static"><span class="lamp idle" id="hsLamp"></span><span class="num" id="hsBusy"></span><span class="num" id="hsLimit"></span><span class="lbl">workers busy</span></span>
         <span class="sitem static" id="hsNeedBox"><span class="num" id="hsNeed"></span><span class="lbl">needs you</span></span>
         <span class="sitem static"><span class="num" id="hsPush"></span><span class="lbl">unpushed</span></span>
       </div>
@@ -727,6 +735,18 @@ const h = (tag, props, ...kids) => {
 };
 // replaceChildren(null) would insert the text "null": drop empty slots first.
 const put = (node, ...kids) => node.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
+// Like put, but a child whose markup is unchanged stays in place: no layout shift, no lost focus, no replayed animation.
+// Only for children whose handlers read live state (ids, not captured snapshots). A child may carry _sig, its markup
+// before any entrance class, so a card that is still animating in compares equal to its refreshed twin.
+function keepSame(node, kids) {
+  const sig = (el) => el._sig ?? el.outerHTML;
+  kids.forEach((kid, i) => {
+    const old = node.children[i];
+    if (!old) node.append(kid);
+    else if (sig(old) !== sig(kid)) old.replaceWith(kid);
+  });
+  while (node.children.length > kids.length) node.lastElementChild.remove();
+}
 // Empty state: what the view shows, why it is empty now, and at most one next action ({ label, onclick, icon }).
 function emptyState(what, why, action) {
   return h('div', { class: 'empty' }, h('h2', { text: what }), h('p', { text: why }),
@@ -1132,18 +1152,19 @@ function lastActivity(pid) {
   return stamps.length ? Math.max(...stamps) : null;
 }
 // First match wins; the action follows the same state so the card never offers two things.
-function homeCard(p, i, animate) {
+function homeCard(p) {
   const st = statusFromState(state, p.id), held = tasksOf(p.id).filter((t) => t.status === 'blocked');
   let text = 'Idle', kind = '', action = { label: 'Open', run: () => go({ current: p.id, view: 'overview', selTask: null }) };
   if (p.paused) { text = 'Paused'; kind = 'wait'; }
   else if (st.planWaits) { text = 'Review plan'; kind = 'wait'; action = { label: 'Review plan', run: () => go({ current: p.id, view: 'plan', selTask: null }) }; }
   else if (st.held || st.pushErr) {
     text = 'Needs you'; kind = 'bad';
-    if (held.length) action = { label: 'Retry held', run: () => retryMany(held) };
+    // Read held tasks at click time: an unchanged card is kept across refreshes, so its handlers must not hold stale data.
+    if (held.length) action = { label: 'Retry held', run: () => retryMany(tasksOf(p.id).filter((t) => t.status === 'blocked')) };
   } else if (st.running > 0) { text = `Running ${st.running}`; kind = 'live'; }
   const at = lastActivity(p.id);
   const open = () => go({ current: p.id, view: 'overview', selTask: null });
-  const card = h('article', { class: 'card pcard' + (animate ? ' enter' : '') },
+  const card = h('article', { class: 'card pcard' },
     h('button', { class: 'pcard-open', type: 'button', 'aria-label': `Open ${p.name}`, onclick: open }),
     h('div', { class: 'row' }, h('span', { class: 'pname ellipsis grow', text: p.name }),
       h('span', { class: 'status' }, lamp(kind), text)),
@@ -1151,7 +1172,7 @@ function homeCard(p, i, animate) {
     h('div', { class: 'row' }, segBar(tally(tasksOf(p.id).filter((t) => t.status !== 'cancelled'))), h('span', { class: 'pct mono', text: st.pct + '%' })),
     h('div', { class: 'row' }, h('span', { class: 'mono muted grow', text: at == null ? 'No activity yet' : relTime(at) }),
       h('button', { class: 'btn act', type: 'button', onclick: action.run, text: action.label })));
-  if (animate) card.style.setProperty('--i', i);
+  card._sig = card.outerHTML;
   return card;
 }
 // The form is static markup so SSE-driven renders never wipe what is being typed; render only flips visibility.
@@ -1205,13 +1226,17 @@ function renderHome(entering) {
   const sts = state.projects.map((p) => statusFromState(state, p.id));
   const busy = state.tasks.filter((t) => t.status === 'running').length;
   const limit = Number(state.settings.find((s) => s.key === 'global_max_workers')?.value ?? 4);
-  countTo($('hsBusy'), busy); $('hsLimit').textContent = '/' + limit; $('hsLamp').hidden = !busy;
+  countTo($('hsBusy'), busy); setText($('hsLimit'), '/' + limit); runLamp($('hsLamp'), busy > 0);
   const need = sts.reduce((n, s) => n + s.needs, 0), push = sts.reduce((n, s) => n + s.unpushed, 0);
   countTo($('hsNeed'), need); $('hsNeedBox').classList.toggle('attn', need > 0);
   countTo($('hsPush'), push);
   // Animate only the render that follows entering Home; it waits for data if the first render had no cards.
   const animate = homeEnter && state.projects.length > 0;
-  put($('homeGrid'), state.projects.map((p, i) => homeCard(p, i, animate && i < 6)));
+  const cards = state.projects.map(homeCard);
+  if (!animate) return keepSame($('homeGrid'), cards);
+  // The entrance class goes on after keepSame's signature is taken, so a refresh mid-entrance keeps the animating card.
+  cards.slice(0, 6).forEach((card, i) => { card.classList.add('enter'); card.style.setProperty('--i', i); });
+  put($('homeGrid'), cards);
   if (animate) homeEnter = false;
 }
 
@@ -1248,19 +1273,26 @@ function statusFromState(s, pid, now = Date.now()) {
   };
 }
 const stripEls = {};
+// Live figures: write only when the text differs, so a 30s refresh of identical data touches no node.
+const setText = (el, text) => { if (el.textContent !== text) el.textContent = text; };
+// The running lamp keeps its slot when idle (.idle = visibility:hidden), so figures beside it never shift.
+const runLamp = (el, on) => { el.classList.toggle('live', on); el.classList.toggle('idle', !on); };
+// Read from the token so the count-up and CSS view entrances share one duration.
+const tView = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--t-view')) || 320;
 function countTo(el, to) {
   const from = Number(el.dataset.v ?? to);
   el.dataset.v = String(to);
-  cancelAnimationFrame(el._raf);
   const fmt = (n) => String(Math.round(n));
-  if (reducedMotion.matches || from === to) { el.textContent = fmt(to); return; }
-  const t0 = performance.now(), dur = 320; // --t-view
+  if (from === to) { if (!el._raf) setText(el, fmt(to)); return; } // unchanged: leave a running count alone
+  cancelAnimationFrame(el._raf); el._raf = 0;
+  if (reducedMotion.matches) { setText(el, fmt(to)); return; }
+  const t0 = performance.now(), dur = tView();
   // cubic-bezier(0.22, 1, 0.36, 1), solved for x by bisection
   const ease = (x) => { let lo = 0, hi = 1; for (let i = 0; i < 20; i++) { const m = (lo + hi) / 2, bx = 3 * (1 - m) * (1 - m) * m * 0.22 + 3 * (1 - m) * m * m * 0.36 + m * m * m; if (bx < x) lo = m; else hi = m; } const m = (lo + hi) / 2; return 3 * (1 - m) * (1 - m) * m + m * m * m; };
   const step = (now) => {
     const k = Math.min(1, (now - t0) / dur);
     el.textContent = fmt(from + (to - from) * ease(k));
-    if (k < 1) el._raf = requestAnimationFrame(step);
+    el._raf = k < 1 ? requestAnimationFrame(step) : 0;
   };
   el._raf = requestAnimationFrame(step);
 }
@@ -1268,8 +1300,7 @@ function renderStrip(st) {
   if (!st) return;
   const item = (key, label, nav) => {
     if (stripEls[key]?.isConnected) return stripEls[key];
-    const num = h('span', { class: 'num' }), unit = h('span', { class: 'num' }), lbl = h('span', { class: 'lbl', text: label }), dot = lamp('live', 'Running');
-    dot.hidden = true;
+    const num = h('span', { class: 'num' }), unit = h('span', { class: 'num' }), lbl = h('span', { class: 'lbl', text: label }), dot = lamp('idle', 'Running');
     const b = h('button', { class: 'sitem', type: 'button', onclick: nav }, dot, num, unit, lbl);
     b._p = { num, unit, dot, lbl }; stripEls[key] = b; return b;
   };
@@ -1285,17 +1316,18 @@ function renderStrip(st) {
   const fin = item('fin', 'finish', () => go({ view: 'board' }));
   const need = item('need', 'needs you', needsView);
   const push = item('push', 'unpushed', () => go({ view: 'ship' }));
-  countTo(pct._p.num, st.pct); pct._p.unit.textContent = '%';
+  // Every write below goes through countTo/setText, which leave the node alone when the value is unchanged.
+  countTo(pct._p.num, st.pct); setText(pct._p.unit, '%');
   pct.setAttribute('aria-label', `${st.pct} percent of tasks merged, open board`);
-  countTo(wk._p.num, st.running); wk._p.unit.textContent = '/' + st.limit; wk._p.dot.hidden = !st.running;
+  countTo(wk._p.num, st.running); setText(wk._p.unit, '/' + st.limit); runLamp(wk._p.dot, st.running > 0);
   wk.setAttribute('aria-label', `${st.running} of ${st.limit} workers running, open board`);
   const finText = st.eta == null ? '—' : clockDay(st.eta);
-  fin._p.num.textContent = finText; fin._p.unit.textContent = '';
+  setText(fin._p.num, finText); setText(fin._p.unit, '');
   fin.setAttribute('aria-label', st.eta == null ? 'Estimated finish unknown, open board' : `Estimated finish ${finText}, open board`);
-  countTo(need._p.num, st.needs); need._p.unit.textContent = '';
+  countTo(need._p.num, st.needs); setText(need._p.unit, '');
   need.classList.toggle('attn', st.needs > 0);
   need.setAttribute('aria-label', `${st.needs} items need you, open the view that explains them`);
-  countTo(push._p.num, st.unpushed); push._p.unit.textContent = '';
+  countTo(push._p.num, st.unpushed); setText(push._p.unit, '');
   push.setAttribute('aria-label', `${st.unpushed} commits not yet pushed to GitHub, open ship`);
   if (!$('strip').firstChild) put($('strip'), pct, wk, fin, need, push);
 }
