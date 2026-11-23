@@ -153,6 +153,14 @@
   .rm-gap .btn:focus-visible, .rm-gap:hover .btn, .rm-gap.open .btn { opacity:1; }
   .rm-confirm { display:flex; flex-wrap:wrap; align-items:center; gap:8px; font-size:13px; }
   .rm-sub .rm-err { padding-bottom:0; }
+  .rm-auto { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; padding:4px 20px 12px; font-size:13px; color:var(--text-2); }
+  .rm-auto .state { color:var(--text); font-weight:600; }
+  .rm-auto .lim { flex-basis:100%; font-size:12px; line-height:16px; color:var(--muted); }
+  .rm-auto .halt { flex-basis:100%; display:flex; flex-wrap:wrap; align-items:center; gap:8px; color:#f08a8d; }
+  .rm-mode { height:20px; padding:0 8px; border:1px solid var(--line); border-radius:10px; background:transparent; color:var(--text-2); font:inherit; font-size:12px; cursor:pointer; white-space:nowrap; }
+  .rm-mode.manual { color:var(--text); border-color:var(--text-2); }
+  .rm-mode:hover { color:var(--text); }
+  .rm-need { color:var(--text); font-size:12px; line-height:16px; overflow-wrap:anywhere; }
   .rm-err { grid-column:3 / -1; font-size:12px; line-height:16px; color:#f08a8d; padding-bottom:8px; overflow-wrap:anywhere; }
   .ship-commits { display:flex; flex-direction:column; border:1px solid var(--line); border-radius:8px; background:var(--deep); padding:4px 0; }
   .ship-commits .c { display:grid; grid-template-columns:104px minmax(0,1fr); align-items:center; gap:12px; height:32px; padding:0 16px; font-size:13px; }
@@ -487,7 +495,7 @@
     <div class="canvas">
       <form class="card form" id="roadmapEditor" hidden>
         <h2 id="roadmapTitle">Add roadmap phases</h2>
-        <p class="t2" style="font-size:13px">Separate phases with a line containing only <span class="mono">---</span>. The first line of each phase is its title. Vizor drafts phase 1 now, and each next phase after the previous one has merged. You approve every plan</p>
+        <p class="t2" style="font-size:13px">Separate phases with a line containing only <span class="mono">---</span>. The first line of each phase is its title. Vizor drafts phase 1 now, and each next phase after the previous one has merged. <span id="rmHelp">You approve every plan</span></p>
         <textarea id="roadmapText" rows="12" class="mono" spellcheck="false" placeholder="Phase 1: Data model&#10;Describe what this phase builds...&#10;---&#10;Phase 2: Logging screens&#10;..."></textarea>
         <div style="display:flex; gap:8px"><button class="btn" type="submit">Add phases</button><button class="btn ghost" type="button" id="roadmapCancel">Cancel</button></div>
       </form>
@@ -517,6 +525,8 @@
           <label class="field"><span>Workers</span><input type="number" id="sWorkers" min="1" max="6"></label>
           <label class="check"><input type="checkbox" id="sAutoPush">Push to GitHub when every task has merged</label>
           <small class="muted" style="font-size:12px; line-height:16px; margin-top:-8px">Runs after each plan or roadmap phase finishes. Fast-forward only, never forces. Needs a GitHub repo connected in Ship</small>
+          <label class="check"><input type="checkbox" id="sAutoApprove">Auto-approve plans</label>
+          <small class="muted" style="font-size:12px; line-height:16px; margin-top:-8px">Roadmap plans start without your click when they pass the limits: max 8 tasks, no protected files, previous phase merged. Off by default. Takes effect immediately</small>
           <label class="check" id="sNotifyRow"><input type="checkbox" id="sNotify">Desktop notifications</label>
           <small class="muted" id="sNotifyHint" style="font-size:12px; line-height:16px; margin-top:-8px">When a plan is ready for review, a task is held, a plan fully merges or a push fails. Saved in this browser right away</small>
           <div><button class="btn" type="submit">Save settings</button></div>
@@ -1320,7 +1330,23 @@ function rmInsertGap(p, pos) {
   const save = async () => { if (await rmCall(key, `/api/projects/${encodeURIComponent(p.id)}/phases`, { position: pos, title: d.title, prompt: d.prompt }, 'insert-open:' + pos)) rmUi.insert = null; };
   return [gap, h('div', { class: 'rm-sub ins' }, open ? rmForm(d, 'insert', save, close) : null, rmErr(key))];
 }
+// Auto-approve controls for the roadmap card. The project setting is the only switch; phases can opt out.
+function autoBar(p) {
+  const on = p.auto_approve === 1;
+  const setAuto = async (v) => { if (await post(`/api/projects/${encodeURIComponent(p.id)}/config`, { autoApprove: v })) { toast(v ? 'Auto-approve on' : 'Auto-approve off'); refresh(); } };
+  const resume = async () => { if (await post(`/api/projects/${encodeURIComponent(p.id)}/auto-approve-resume`)) { toast('Auto-approve resumed'); refresh(); } };
+  return h('div', { class: 'rm-auto', 'data-auto-bar': on ? 'on' : 'off' },
+    on ? h('span', { class: 'state', text: 'Auto-approve is on' }) : h('span', { text: 'Auto-approve is off. You approve every plan' }),
+    on ? h('button', { class: 'btn', type: 'button', 'data-auto-off': '', onclick: () => setAuto(false) }, 'Turn off auto-approve')
+      : h('button', { class: 'btn ghost', type: 'button', 'data-auto-on': '', onclick: () => setAuto(true) }, 'Turn on auto-approve'),
+    h('span', { class: 'lim', text: 'Limits: max 8 tasks, no protected files, previous phase merged. Anything else waits for you' }),
+    p.auto_approve_halted ? h('div', { class: 'halt', role: 'alert', 'data-auto-halted': '' },
+      h('span', { text: `Auto-approve halted: ${p.auto_approve_halted}` }),
+      h('button', { class: 'btn', type: 'button', 'data-auto-resume': '', onclick: resume }, 'Resume auto-approve')) : null);
+}
 function roadmapCard(p) {
+  const help = $('rmHelp');
+  if (help) help.textContent = p.auto_approve === 1 ? 'Plans that pass the auto-approve limits start on their own; the rest wait for you' : 'You approve every plan';
   const phs = (state.phases || []).filter((x) => x.project_id === p.id).sort((a, b) => a.position - b.position);
   const add = h('button', { class: 'btn ghost', onclick: () => { $('roadmapEditor').hidden = false; $('roadmapText').focus(); } }, icon('plus'), phs.length ? 'Add phases' : 'Add roadmap');
   if (!phs.length) return h('div', { class: 'card roadmap' }, h('div', { class: 'rm-head', style: 'padding-bottom:8px' }, h('h2', { text: 'Roadmap' }),
@@ -1329,6 +1355,7 @@ function roadmapCard(p) {
   const statusOf = (id) => phs.find((x) => x.id === id)?.status;
   if (rmUi.edit && statusOf(rmUi.edit.id) !== 'queued') rmUi.edit = null;
   if (rmUi.confirm != null && statusOf(rmUi.confirm) !== 'review') rmUi.confirm = null;
+  const autoOn = p.auto_approve === 1;
   const done = phs.filter((x) => x.status === 'done').length;
   const queued = phs.filter((x) => x.status === 'queued');
   const rows = [];
@@ -1345,6 +1372,11 @@ function roadmapCard(p) {
       h('span', { class: 't2', style: 'font-size:13px; white-space:nowrap', text: label + (plan ? ` · v${plan.version}` : '') }),
       h('div', { class: 'acts' },
         readOnly ? h('span', { class: 'lock', 'data-rm-readonly': '', title: `Read-only while ${label.toLowerCase()}`, role: 'img', 'aria-label': `Read-only: ${label}` }, icon('lock')) : null,
+        autoOn && ['queued', 'review'].includes(ph.status) ? (ph.approve_mode === 'off'
+          ? h('button', { class: 'rm-mode manual', type: 'button', 'data-mode': 'manual', 'data-rm-key': 'mode:' + ph.id, title: 'This phase will not auto-approve. Click to follow the project setting',
+            onclick: () => rmCall(ph.id, `/api/phases/${ph.id}/approve-mode`, { mode: 'inherit' }, 'mode:' + ph.id) }, 'Manual — waits for you')
+          : h('button', { class: 'rm-mode', type: 'button', 'data-mode': 'auto', 'data-rm-key': 'mode:' + ph.id, title: 'Auto-approves if the limits pass. Click to approve this phase yourself',
+            onclick: () => rmCall(ph.id, `/api/phases/${ph.id}/approve-mode`, { mode: 'off' }, 'mode:' + ph.id) }, 'auto')) : null,
         ph.status === 'review' && ph.plan_id ? h('button', { class: 'btn', onclick: () => { selPlan[p.id] = ph.plan_id; selNode = null; renderPlan(); } }, 'Review plan') : null,
         ph.status === 'failed' ? h('button', { class: 'btn', onclick: async () => { if (await post(`/api/phases/${ph.id}/retry`)) refresh(); } }, icon('retry'), 'Retry') : null,
         isQueued ? [
@@ -1365,7 +1397,8 @@ function roadmapCard(p) {
         h('span', { text: 'Remove this phase? Its drafted plan will be discarded' }),
         h('button', { class: 'btn primary', type: 'button', 'data-rm-key': 'confirm-keep:' + ph.id, onclick: () => { rmUi.confirm = null; rmRerender('remove:' + ph.id); } }, 'Keep phase'),
         h('button', { class: 'btn', type: 'button', 'data-rm-confirm-remove': '', onclick: remove }, 'Remove and discard plan')) : null;
-      if (err || confirm) rows.push(h('div', { class: 'rm-sub' }, confirm, err));
+      const need = ph.status === 'review' && ph.auto_note ? h('p', { class: 'rm-need', 'data-auto-note': '', text: `Needs you: ${ph.auto_note}` }) : null;
+      if (err || confirm || need) rows.push(h('div', { class: 'rm-sub' }, need, confirm, err));
     }
   });
   rows.push(rmInsertGap(p, phs.length + 1));
@@ -1374,7 +1407,7 @@ function roadmapCard(p) {
       p.roadmap_paused ? h('span', { class: 't2', style: 'font-size:13px', text: 'Paused' }) : null, h('span', { class: 'grow' }),
       h('button', { class: 'btn ghost', onclick: async () => { if (await post(`/api/projects/${p.id}/roadmap-pause`, { paused: !p.roadmap_paused })) refresh(); } },
         icon(p.roadmap_paused ? 'play' : 'pause'), p.roadmap_paused ? 'Resume' : 'Pause'), add),
-    rows);
+    autoBar(p), rows);
 }
 
 function drawEdges() {
@@ -1834,6 +1867,9 @@ function evText(e) {
     case 'branch_updated_from_base': return `branch updated, new head ${short(d.head)}`;
     case 'task_blocked': return d.reason;
     case 'owner_override_merge': return `Owner merged ${state.tasks.find((x) => x.id === d.taskId)?.key || 'task'} anyway at ${short(d.headSha)}`;
+    case 'plan_auto_approved': { const v = planFor(d.planId)?.version; return `Plan${v != null ? ' v' + v : ''} auto-approved (project setting)`; }
+    case 'auto_approve_halted': return `Auto-approve halted: ${d.reason}`;
+    case 'auto_approve_resumed': return 'Auto-approve resumed';
     case 'owner_override_merge_failed': return `Merge anyway failed, nothing merged: ${d.error}`;
     case 'runner_error': return d.error;
     default: { const s = JSON.stringify(d); return s === '{}' ? '' : s; }
@@ -1994,6 +2030,7 @@ function renderProjects() {
     settingsFor = p.id;
     $('settingsTitle').textContent = `Settings for ${p.name}`;
     $('sCi').value = p.ci_command; $('sWorkers').value = p.max_workers; $('sAutoPush').checked = !!p.auto_push;
+    $('sAutoApprove').checked = p.auto_approve === 1;
     $('sNotify').checked = notifyOn(p.id);
   }
   if (document.activeElement !== $('gWorkers')) $('gWorkers').value = state.settings.find((s) => s.key === 'global_max_workers')?.value ?? 4;
@@ -2040,6 +2077,10 @@ async function togglePause() {
 $('settingsForm').onsubmit = async (e) => {
   e.preventDefault(); const p = proj(); if (!p) return;
   if (await post(`/api/projects/${p.id}/config`, { ciCommand: $('sCi').value, maxWorkers: Number($('sWorkers').value), autoPush: $('sAutoPush').checked })) { toast('Settings saved'); document.activeElement.blur(); refresh(); }
+};
+$('sAutoApprove').onchange = async (e) => {
+  const box = e.currentTarget, p = proj(); if (!p) return;
+  if (await post(`/api/projects/${p.id}/config`, { autoApprove: box.checked })) { toast(box.checked ? 'Auto-approve on' : 'Auto-approve off'); refresh(); } else box.checked = !box.checked;
 };
 $('sNotifyRow').hidden = $('sNotifyHint').hidden = !canNotify;
 // The only place permission is requested: when the owner ticks the box, never on load.
