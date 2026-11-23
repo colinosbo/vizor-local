@@ -4,6 +4,7 @@ import type { DB } from './db.js';
 import { emit } from './events.js';
 import { resolveLocalOrigin } from './forges.js';
 import { git, revParse } from './git.js';
+import { DENYLIST_GITIGNORE } from './push-guard.js';
 import { DEFAULT_CI, type Project } from './types.js';
 
 export function canonicalPath(p: string): string {
@@ -38,7 +39,7 @@ export function addProject(db: DB, repoPath: string, opts: AddProjectOpts = {}):
   if (!top) {
     if (!opts.createOrigin) throw new Error(`${path} is not a git checkout (pass --create-origin to initialise it)`);
     git(path, ['init', '--quiet', '-b', base]);
-    if (!existsSync(join(path, '.gitignore'))) writeFileSync(join(path, '.gitignore'), 'node_modules/\n.env\n.env.*\n*.db\n');
+    if (!existsSync(join(path, '.gitignore'))) writeFileSync(join(path, '.gitignore'), `node_modules/\n${DENYLIST_GITIGNORE}\n`);
     git(path, ['add', '-A']);
     git(path, ['commit', '--quiet', '--allow-empty', '-m', 'Initial commit (Local)']);
   } else if (canonicalPath(top) !== path) throw new Error(`${path} is not the root of a git checkout (root: ${top})`);
