@@ -309,6 +309,31 @@
   #toast.show { opacity:1; transform:none; }
   #toast.bad { border-color:rgba(229,72,77,.5); }
 
+  /* Command palette. Same surfaces as the popover; the selected row is a surface step with a hairline. */
+  .keys { display:inline-flex; gap:4px; flex:none; }
+  .nav .keys { margin-left:auto; }
+  .pal-scrim { position:fixed; inset:0; z-index:30; display:flex; justify-content:center; align-items:flex-start; padding:12vh 16px 16px; background:rgba(15,15,16,.72); }
+  .pal { width:min(600px, 100%); max-height:min(520px, 76vh); display:flex; flex-direction:column; background:var(--card); border:1px solid var(--line-2); border-radius:12px; overflow:hidden; }
+  .pal-scrim:not([hidden]) .pal { animation:view-in var(--t-menu) var(--ease); }
+  .pal-in { display:flex; align-items:center; gap:8px; height:48px; flex:none; padding:0 16px; border-bottom:1px solid var(--line); color:var(--muted); }
+  .pal-in input[type=text] { flex:1; min-width:0; height:32px; padding:0; border:0; border-radius:0; background:none; font-size:15px; }
+  .pal-in input[type=text]:focus-visible { outline:none; }
+  .pal-list { overflow:auto; padding:4px; display:flex; flex-direction:column; gap:2px; }
+  .pal-opt { display:grid; grid-template-columns:16px minmax(0,1fr) auto 56px; align-items:center; gap:10px; min-height:36px; padding:0 8px 0 12px; border:1px solid transparent; border-radius:8px; color:var(--text-2); cursor:pointer; }
+  .pal-opt > .lamp { justify-self:center; }
+  .pal-opt .txt { display:flex; align-items:baseline; gap:8px; min-width:0; }
+  .pal-opt .lbl { flex:none; max-width:70%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); }
+  .pal-opt .hint { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; color:var(--muted); }
+  .pal-opt .hit { color:var(--accent); }
+  .pal-opt .kind { text-align:right; color:var(--muted); }
+  .pal-opt[aria-selected="true"] { background:var(--raised); border-color:var(--line); }
+  .pal-opt[aria-disabled="true"] { cursor:not-allowed; }
+  .pal-opt[aria-disabled="true"] .lbl { color:var(--muted); }
+  .pal-none { padding:12px 16px; font-size:13px; color:var(--muted); }
+  .pal-foot { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; flex:none; padding:8px 16px; border-top:1px solid var(--line); font-size:12px; line-height:16px; color:var(--muted); }
+  .pal-foot > span { display:inline-flex; align-items:center; gap:4px; }
+  .pal-foot .sep { flex-basis:100%; height:0; }
+
 
   /* Overview */
   .ov { display:flex; flex-direction:column; gap:20px; max-width:1520px; }
@@ -408,7 +433,10 @@
 <body>
 <aside>
   <button class="wordmark" type="button" id="goHome" aria-label="Vizor Local, go to Home"><span class="mark"></span>Vizor Local</button>
-  <div class="stack" id="homeNav"></div>
+  <div class="stack">
+    <div class="stack" id="homeNav"></div>
+    <button class="nav" type="button" id="palOpen" aria-haspopup="dialog" aria-keyshortcuts="Control+K Meta+K"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><span>Commands</span><span class="keys" id="palKeys"></span></button>
+  </div>
   <div>
     <div class="side-label"><span>Projects</span></div>
     <div class="stack" id="projectList"></div>
@@ -552,6 +580,18 @@
   </section>
 </main>
 <div id="toast" role="status" aria-live="polite"></div>
+<div class="pal-scrim" id="palette" hidden>
+  <div class="pal" id="palDialog" role="dialog" aria-label="Command palette">
+    <div class="pal-in">
+      <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      <input type="text" id="palIn" role="combobox" aria-expanded="true" aria-controls="palList" aria-autocomplete="list" aria-label="Search projects, views, tasks and actions" placeholder="Search" spellcheck="false" autocomplete="off">
+      <span class="mono" id="palCount" aria-live="polite"></span>
+    </div>
+    <div class="pal-list" id="palList" role="listbox" aria-label="Results"></div>
+    <p class="pal-none" id="palNone" hidden>No matches</p>
+    <div class="pal-foot" id="palFoot"></div>
+  </div>
+</div>
 
 <script>
 // All untrusted text (worker output, CI logs, plans, PR content) is rendered with textContent only.
@@ -585,6 +625,7 @@ const ICONS = { // lucide paths (constant strings)
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   chev: '<path d="m9 18 6-6-6-6"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
   up: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
   down: '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
   edit: '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
@@ -842,6 +883,7 @@ function render() {
   if (shown === 'ship') renderShip();
   if (shown === 'projects') renderProjects();
   warnExtraPrimaries(shown);
+  if (palOpen) renderPalette(); // keep action states current while open
 }
 // Dev-time guard: at most one visible .btn.primary across the current view and header
 function warnExtraPrimaries(shown) {
@@ -1163,8 +1205,7 @@ function planCanvas(p) {
   }
   const plan = plans.find((x) => x.id === selPlan[p.id]) || plans[0];
   const body = JSON.parse(plan.body);
-  const drafted = events.find((e) => e.type === 'plan_drafted' && e.d.planId === plan.id);
-  const validation = drafted?.d.validation || { errors: [], warnings: [] };
+  const validation = planValidation(plan);
   const live = new Map(state.tasks.filter((t) => t.plan_id === plan.id).map((t) => [t.key, t]));
   const statusWord = { draft: 'Draft, waiting for approval', approved: 'Approved', superseded: 'Superseded' }[plan.status] || plan.status;
   const anyRunning = [...live.values()].some((t) => t.status === 'running');
@@ -1220,14 +1261,7 @@ function planCanvas(p) {
     const guard = approveGuard?.planId === plan.id ? approveGuard : null;
     if (guard) { out.push(approveGuardPanel(plan, guard.tasks)); return out; }
     out.push(h('div', { class: 'approve' },
-      h('button', { class: 'btn primary', disabled: validation.errors.length > 0, onclick: async () => {
-        const mine = prev ? inFlightOf(prev.id) : [];
-        if (mine.length) return openApproveGuard(plan.id, mine);
-        const ok = await post(`/api/plans/${plan.id}/approve`, undefined, (m, j) => {
-          if (Array.isArray(j?.inFlight) && j.inFlight.length) openApproveGuard(plan.id, j.inFlight); else toast(m, true);
-        });
-        if (ok) { toast(`Plan v${plan.version} approved`); refresh(); }
-      } }, `Approve plan v${plan.version}`),
+      h('button', { class: 'btn primary', disabled: validation.errors.length > 0, onclick: () => approvePlan(plan) }, `Approve plan v${plan.version}`),
       h('p', { text: validation.errors.length ? 'Fix the errors above with a new request first'
         : prev ? `Starts work now. From plan v${prev.version}, tasks not started yet are cancelled and running ones are held for you` : 'Starts work now, within the worker limit' })));
   } else if (plan.status === 'approved') {
@@ -1246,6 +1280,18 @@ function openApproveGuard(planId, tasks) {
   renderPlan();
   document.querySelector('.guard [data-default]')?.focus();
 }
+// The Approve plan button and the palette both come through here, so the in-flight guard always applies.
+async function approvePlan(plan) {
+  const prev = plansOf(plan.project_id).find((x) => x.status === 'approved');
+  if (view !== 'plan') go({ view: 'plan' }); // the guard panel lives in Plan
+  const mine = prev ? inFlightOf(prev.id) : [];
+  if (mine.length) return openApproveGuard(plan.id, mine);
+  const ok = await post(`/api/plans/${plan.id}/approve`, undefined, (m, j) => {
+    if (Array.isArray(j?.inFlight) && j.inFlight.length) openApproveGuard(plan.id, j.inFlight); else toast(m, true);
+  });
+  if (ok) { toast(`Plan v${plan.version} approved`); refresh(); }
+}
+const planValidation = (plan) => events.find((e) => e.type === 'plan_drafted' && e.d.planId === plan.id)?.d.validation || { errors: [], warnings: [] };
 function closeApproveGuard() {
   approveGuard = null;
   renderPlan();
@@ -1344,11 +1390,12 @@ function autoBar(p) {
       h('span', { text: `Auto-approve halted: ${p.auto_approve_halted}` }),
       h('button', { class: 'btn', type: 'button', 'data-auto-resume': '', onclick: resume }, 'Resume auto-approve')) : null);
 }
+function openRoadmapEditor() { $('roadmapEditor').hidden = false; $('roadmapText').focus(); }
 function roadmapCard(p) {
   const help = $('rmHelp');
   if (help) help.textContent = p.auto_approve === 1 ? 'Plans that pass the auto-approve limits start on their own; the rest wait for you' : 'You approve every plan';
   const phs = (state.phases || []).filter((x) => x.project_id === p.id).sort((a, b) => a.position - b.position);
-  const add = h('button', { class: 'btn ghost', onclick: () => { $('roadmapEditor').hidden = false; $('roadmapText').focus(); } }, icon('plus'), phs.length ? 'Add phases' : 'Add roadmap');
+  const add = h('button', { class: 'btn ghost', onclick: openRoadmapEditor }, icon('plus'), phs.length ? 'Add phases' : 'Add roadmap');
   if (!phs.length) return h('div', { class: 'card roadmap' }, h('div', { class: 'rm-head', style: 'padding-bottom:8px' }, h('h2', { text: 'Roadmap' }),
     h('span', { class: 'grow muted', style: 'font-size:13px', text: 'Queue several phases. Each is drafted after the previous one merges, and queued phases stay editable until then' }), add));
   // Drop open forms whose phase moved on while the form was open.
@@ -1912,7 +1959,7 @@ function renderRun() {
   runEl.dataset.task = t.id;
   put(runEl, 
     h('div', { style: 'display:flex; align-items:center; gap:16px' }, h('h1', { class: 'grow', style: 'overflow-wrap:anywhere', text: t.title }),
-      t.status === 'blocked' ? h('button', { class: 'btn', onclick: () => retry(t) }, icon('retry'), 'Retry') : null,
+      t.status === 'blocked' ? h('button', { class: 'btn', onclick: () => retry(t) }, icon('retry'), 'Retry task') : null,
       canMergeAnyway(t) && mergeAnyway?.taskId !== t.id ? h('button', { class: 'btn', 'data-merge-anyway': '', onclick: () => openMergeAnyway(t) }, icon('ship'), 'Merge anyway') : null,
       active ? h('button', { class: 'btn ghost', onclick: () => cancelRun(active) }, icon('x'), 'Cancel run') : null),
     h('div', { class: 'facts' }, statusEl(t.status),
@@ -1937,6 +1984,8 @@ function renderRun() {
 
 // ----- Ship: your folder + push to GitHub (fast-forward only, owner confirms) -----
 const shipCache = {}; let shipConfirm = null;
+// Push to GitHub never pushes directly: it shows the confirm step in Ship.
+function askPush(pid) { shipConfirm = pid; renderShip(); }
 async function loadShip(pid, fetchGithub = true) {
   shipCache[pid] = { ...(shipCache[pid] || {}), loading: true };
   if (view === 'ship') renderShip();
@@ -1983,7 +2032,7 @@ function renderShip() {
       : d.behind ? h('p', { class: 'note-bad', text: `GitHub has ${d.behind} commit(s) Local does not have. Pushing is blocked so nothing on GitHub is overwritten` })
       : !n ? h('p', { class: 'status' }, lamp('ok'), 'GitHub is up to date')
       : h('p', { class: 't2', text: `${n} commit${n > 1 ? 's' : ''} on Local's main that GitHub does not have` });
-    const confirming = shipConfirm === p.id;
+    const confirming = shipConfirm === p.id && d.canPush; // the palette can ask before Ship has loaded
     gh = [h('p', { class: 'mono t2', text: d.remote }), line,
       n && !d.behind && !d.fetchError ? h('div', { class: 'ship-commits' }, d.ahead.slice(0, 10).map((x) => h('div', { class: 'c' }, h('span', { class: 'mono muted' }, x.sha.slice(0, 8), copyBtn(x.sha, 'SHA')), h('span', { class: 'ellipsis', text: x.subject }))),
         n > 10 ? h('div', { class: 'c' }, h('span'), h('span', { class: 'muted', text: `+${n - 10} more` })) : null) : null,
@@ -1997,7 +2046,7 @@ function renderShip() {
               } }, icon('ship'), `Confirm: push ${n} to ${p.base_branch}`),
              h('button', { class: 'btn ghost', onclick: () => { shipConfirm = null; renderShip(); } }, 'Cancel'),
              h('span', { class: 'muted', style: 'font-size:13px', text: 'Fast-forward only. Uses your own git sign-in' })]
-          : h('button', { class: 'btn primary', disabled: !d.canPush || !!c.loading, onclick: () => { shipConfirm = p.id; renderShip(); } }, icon('ship'), n ? `Push ${n} commit${n > 1 ? 's' : ''} to GitHub` : 'Push to GitHub'))];
+          : h('button', { class: 'btn primary', disabled: !d.canPush || !!c.loading, onclick: () => askPush(p.id) }, icon('ship'), n ? `Push ${n} commit${n > 1 ? 's' : ''} to GitHub` : 'Push to GitHub'))];
   }
   put($('v-ship'), h('div', { class: 'narrow' },
     h('div', { style: 'display:flex; align-items:center; gap:16px' }, h('h1', { class: 'grow', text: 'Ship' }), recheck),
@@ -2160,6 +2209,9 @@ function boardKey(e) {
   return true;
 }
 document.addEventListener('keydown', (e) => {
+  // Ctrl+K / Cmd+K is the one shortcut that also works while typing in chatIn or any other field.
+  if (isPaletteKey(e)) { e.preventDefault(); if (!e.repeat) togglePalette(); return; }
+  if (palOpen) return; // the palette handles its own keys
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable;
   if (e.key === 'Escape' && typing) return e.target.blur();
   if (mergeAnyway && view === 'run' && e.key === 'Escape') return closeMergeAnyway();
@@ -2171,6 +2223,162 @@ document.addEventListener('keydown', (e) => {
   if (i >= 1 && i <= VIEWS.length) { e.preventDefault(); go({ view: VIEWS[i - 1][0] }); }
   if (e.key === '/' && proj()) { e.preventDefault(); go({ view: 'plan' }); $('chatIn').focus(); }
 });
+// ----- Command palette (Ctrl+K / Cmd+K): projects, views, tasks in this project, and actions -----
+// Every action calls the same function as its visible button and is hidden or disabled when it does not apply.
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.userAgentData?.platform || navigator.platform || '');
+const isPaletteKey = (e) => (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key?.toLowerCase() === 'k';
+const PALETTE_KEYS = [IS_MAC ? '⌘' : 'Ctrl', 'K'];
+const KEY_GLYPH = { ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→', Escape: 'Esc' };
+const keycaps = (keys) => h('span', { class: 'keys' }, keys.map((k) => h('span', { class: 'kbd', text: KEY_GLYPH[k] ?? k })));
+const BOARD_KEY_LABEL = { up: 'Up', down: 'Down', left: 'Left column', right: 'Right column', open: 'Open run', retry: 'Retry held', back: 'Back to board' };
+let palOpen = false, palReturn = null, palTask = null, palShown = [], palActive = -1;
+
+// Same endpoints and toasts as the roadmap card's auto-approve buttons.
+async function paletteAuto(p, path, body, msg) {
+  if (await post(`/api/projects/${encodeURIComponent(p.id)}/${path}`, body)) { toast(msg); refresh(); }
+}
+function paletteActions() {
+  const p = view === 'home' ? null : proj();
+  if (!p) return [];
+  const t = palTask ? state.tasks.find((x) => x.id === palTask && x.project_id === p.id) : null;
+  const draft = needsApproval(p.id) ? latestPlan(p.id) : null;
+  const ship = shipCache[p.id]?.data;
+  const auto = p.auto_approve === 1;
+  return [
+    t?.status === 'blocked' && { id: 'retry', label: 'Retry task', icon: 'retry', hint: t.title, keys: view === 'board' ? BOARD_KEYS.retry : null, run: () => retry(t) },
+    { id: 'push', label: 'Push to GitHub', icon: 'ship', hint: 'Confirm in Ship', disabled: ship && !ship.canPush ? 'Nothing to push' : null,
+      run: () => { if (view !== 'ship') go({ view: 'ship' }); askPush(p.id); } },
+    { id: 'pause', label: p.paused ? 'Resume dispatch' : 'Pause dispatch', icon: p.paused ? 'play' : 'pause', run: togglePause },
+    draft && { id: 'approve', label: 'Approve plan', icon: 'check', hint: `Plan v${draft.version}`,
+      disabled: planValidation(draft).errors.length ? 'Fix the plan errors first' : null, run: () => approvePlan(draft) },
+    { id: 'roadmap', label: 'Add roadmap', icon: 'plus', run: () => { if (view !== 'plan') go({ view: 'plan' }); openRoadmapEditor(); } },
+    { id: 'auto', label: auto ? 'Turn off auto-approve' : 'Turn on auto-approve', icon: 'check', hint: auto ? 'You approve every plan' : 'Plans within the limits start on their own', run: () => paletteAuto(p, 'config', { autoApprove: !auto }, auto ? 'Auto-approve off' : 'Auto-approve on') },
+    p.auto_approve_halted && { id: 'auto-resume', label: 'Resume auto-approve', icon: 'play', hint: p.auto_approve_halted, run: () => paletteAuto(p, 'auto-approve-resume', undefined, 'Auto-approve resumed') },
+  ].filter(Boolean);
+}
+function paletteItems() {
+  const p = proj();
+  const items = paletteActions().map((a) => ({ ...a, kind: 'Action' }));
+  items.push({ id: 'view:home', kind: 'View', label: 'Home', icon: 'home', run: () => go({ view: 'home' }) });
+  VIEWS.forEach(([k, label], i) => { if (p || k === 'projects') items.push({ id: 'view:' + k, kind: 'View', label, icon: k, keys: [String(i + 1)], run: () => go({ view: k }) }); });
+  for (const x of state.projects) items.push({ id: 'project:' + x.id, kind: 'Project', label: x.name, hint: x.repo_path, lamp: projectStatus(x)[1],
+    run: () => go({ current: x.id, view: view === 'projects' || view === 'home' ? 'overview' : view, selTask: null }) });
+  if (p) for (const t of tasksOf(p.id).filter((t) => t.status !== 'cancelled').sort((a, b) => Number(isOpenTask(b)) - Number(isOpenTask(a))))
+    items.push({ id: 'task:' + t.id, kind: 'Task', label: t.title, hint: t.key, lamp: (STATUS[t.status] || [])[1] || '', open: isOpenTask(t), run: () => go({ view: 'run', selTask: t.id }) });
+  return items;
+}
+// Subsequence match: every query character in order. Contiguous runs and word starts score higher; null = no match.
+function fuzzy(q, text) {
+  const s = text.toLowerCase(), hits = [];
+  let score = 0, run = 0, from = 0;
+  for (const ch of q) {
+    const i = s.indexOf(ch, from);
+    if (i < 0) return null;
+    run = hits.length && i === hits[hits.length - 1] + 1 ? run + 1 : 0;
+    score += 1 + 2 * run + (i === 0 || /[\s\-_/.:#]/.test(s[i - 1]) ? 3 : 0);
+    hits.push(i); from = i + 1;
+  }
+  return { score: score - (hits[0] + s.length) * 0.01, hits };
+}
+function markHits(text, hits) {
+  if (!hits?.length) return text;
+  const set = new Set(hits), out = [];
+  for (let i = 0; i < text.length;) {
+    const on = set.has(i); let j = i;
+    while (j < text.length && set.has(j) === on) j++;
+    out.push(on ? h('span', { class: 'hit', text: text.slice(i, j) }) : text.slice(i, j));
+    i = j;
+  }
+  return out;
+}
+function renderPalette() {
+  const q = $('palIn').value.replace(/\s+/g, '').toLowerCase();
+  const keep = palShown[palActive]?.id;
+  const items = paletteItems();
+  if (!q) palShown = [...items.filter((x) => x.kind !== 'Task'), ...items.filter((x) => x.kind === 'Task' && x.open).slice(0, 8)];
+  else {
+    palShown = items.map((x, order) => {
+      const m = fuzzy(q, x.label), mh = m ? null : x.hint && fuzzy(q, x.hint);
+      return m ? { ...x, order, score: m.score, hits: m.hits } : mh ? { ...x, order, score: mh.score / 2 } : null;
+    }).filter(Boolean).sort((a, b) => b.score - a.score || a.order - b.order).slice(0, 50);
+  }
+  put($('palList'), palShown.map((x, i) => h('div', { class: 'pal-opt', role: 'option', id: 'pal-opt-' + i, 'aria-selected': 'false', 'aria-disabled': x.disabled ? 'true' : null,
+    onmousemove: () => { if (palActive !== i) setPaletteActive(i); }, onclick: () => runPaletteItem(x) },
+    x.lamp != null ? lamp(x.lamp) : icon(x.icon),
+    h('span', { class: 'txt' }, h('span', { class: 'lbl' }, markHits(x.label, x.hits)), x.disabled || x.hint ? h('span', { class: 'hint', text: x.disabled || x.hint }) : null),
+    x.keys ? keycaps(x.keys) : h('span'),
+    h('span', { class: 'kind mono', text: x.kind }))));
+  $('palNone').hidden = palShown.length > 0;
+  $('palCount').textContent = q ? `${palShown.length} ${palShown.length === 1 ? 'result' : 'results'}` : '';
+  const again = palShown.findIndex((x) => x.id === keep);
+  setPaletteActive(again >= 0 ? again : palShown.findIndex((x) => !x.disabled));
+}
+function setPaletteActive(i) {
+  palActive = i;
+  $('palList').querySelectorAll('.pal-opt').forEach((o, n) => o.setAttribute('aria-selected', String(n === i)));
+  const opt = i >= 0 ? $('pal-opt-' + i) : null;
+  if (opt) { $('palIn').setAttribute('aria-activedescendant', opt.id); opt.scrollIntoView({ block: 'nearest' }); }
+  else $('palIn').removeAttribute('aria-activedescendant');
+}
+// Up/Down skip disabled rows and wrap around.
+function movePalette(step) {
+  const n = palShown.length;
+  for (let k = 1; k <= n; k++) {
+    const i = (((palActive < 0 ? (step > 0 ? -1 : 0) : palActive) + step * k) % n + n) % n;
+    if (!palShown[i].disabled) return setPaletteActive(i);
+  }
+}
+function runPaletteItem(x) {
+  if (!x || x.disabled) return;
+  closePalette();
+  x.run();
+}
+function renderPaletteFoot() {
+  const group = (keys, label) => h('span', {}, keycaps(keys), label);
+  put($('palFoot'), group(['ArrowUp', 'ArrowDown'], 'Move'), group(['Enter'], 'Run'), group(['Escape'], 'Close'), group(PALETTE_KEYS, 'Toggle'),
+    h('span', { class: 'sep', 'aria-hidden': 'true' }), h('span', { text: 'Board' }),
+    Object.entries(BOARD_KEYS).map(([action, keys]) => group(keys, BOARD_KEY_LABEL[action] ?? action)));
+}
+function openPalette() {
+  if (palOpen) return;
+  palReturn = document.activeElement;
+  const card = palReturn?.closest?.('.tcard[data-task-id]');
+  palTask = card ? card.dataset.taskId : view === 'run' ? selTask : null;
+  palOpen = true;
+  hidePop();
+  document.querySelector('aside').inert = document.querySelector('main').inert = true;
+  $('palDialog').setAttribute('aria-modal', 'true');
+  $('palette').hidden = false;
+  $('palIn').value = '';
+  palShown = []; palActive = -1;
+  renderPalette(); renderPaletteFoot();
+  $('palIn').focus();
+}
+function closePalette() {
+  if (!palOpen) return;
+  palOpen = false;
+  $('palette').hidden = true;
+  $('palDialog').removeAttribute('aria-modal');
+  document.querySelector('aside').inert = document.querySelector('main').inert = false;
+  const back = palReturn; palReturn = null;
+  if (back?.isConnected && back !== document.body) back.focus();
+}
+const togglePalette = () => (palOpen ? closePalette() : openPalette());
+put($('palKeys'), PALETTE_KEYS.map((k) => h('span', { class: 'kbd', text: k })));
+$('palOpen').onclick = openPalette;
+$('palIn').addEventListener('input', renderPalette);
+$('palDialog').addEventListener('keydown', (e) => {
+  if (e.isComposing) return;
+  if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closePalette(); }
+  else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); movePalette(e.key === 'ArrowDown' ? 1 : -1); }
+  else if (e.key === 'Enter') { e.preventDefault(); runPaletteItem(palShown[palActive]); }
+  else if (e.key === 'Tab') { e.preventDefault(); $('palIn').focus(); } // focus trap: the input is the only tab stop
+});
+// Clicking a row must not move focus out of the input; clicking the scrim closes.
+$('palList').addEventListener('mousedown', (e) => e.preventDefault());
+$('palette').addEventListener('mousedown', (e) => { if (e.target === e.currentTarget) closePalette(); });
+document.addEventListener('focusin', (e) => { if (palOpen && !$('palDialog').contains(e.target)) $('palIn').focus(); });
+
 $('goHome').addEventListener('click', () => go({ view: 'home' }));
 window.addEventListener('hashchange', () => { readHash(); render(); });
 window.addEventListener('resize', () => requestAnimationFrame(drawEdges));
