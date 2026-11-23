@@ -371,6 +371,11 @@
   .prow .mono { text-align:right; }
   .lrow { display:grid; grid-template-columns:8px minmax(0,1fr) auto; align-items:center; gap:12px; min-height:32px; padding:0 20px; border-top:1px solid var(--line); }
   .panel-head + .lrow { border-top:0; }
+  .srow { display:grid; grid-template-columns:8px minmax(0,1fr) auto; align-items:center; gap:12px; min-height:48px; padding:8px 20px; border-top:1px solid var(--line); }
+  .panel-head + .srow { border-top:0; }
+  .srow .sr-text { display:flex; flex-direction:column; gap:2px; min-width:0; }
+  .srow .sr-text span:last-child { font-size:13px; line-height:18px; color:var(--text-2); overflow-wrap:anywhere; }
+  .srow .sr-act { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
   .attn { display:flex; flex-direction:column; gap:8px; padding:8px 20px 12px; border-top:1px solid var(--line); }
   .panel-head + .attn { border-top:0; }
   .attn .top { display:flex; align-items:flex-start; gap:8px; }
@@ -1576,6 +1581,56 @@ async function retryMany(ts) {
   if (ok) toast(`Retrying ${ok} task${ok === 1 ? '' : 's'}`);
   refresh();
 }
+// ----- First-run setup checklist -----
+const autopushKey = (pid) => 'vizor.autopushChosen.' + pid;
+function autopushChosen(pid) {
+  try { return !!localStorage.getItem(autopushKey(pid)); } catch { return false; }
+}
+// Pure list of the six setup rows for a project. `fix` names the one action a failing row offers.
+function setupRows(p) {
+  const s = p && p.setup;
+  if (!s) return [];
+  return [
+    { key: 'repo', label: 'Folder is a git repository', done: !!s.gitRepo, fix: 'readd',
+      text: s.gitRepo ? 'The project folder has git history Local can branch from' : 'Local needs a git repository to branch and merge in' },
+    { key: 'origin', label: 'Local origin exists', done: !!s.origin, fix: 'readd',
+      text: s.origin ? 'Merges land in the local origin' : 'No local origin yet. Re-add the project and tick Create origin' },
+    { key: 'tests', label: 'Test command set and passing on main', done: !!s.testCommand && s.testsPassOnMain === true, fix: 'config',
+      text: !s.testCommand ? 'No test command is set, so merges are not checked' : s.testsPassOnMain === true ? 'The test command passes on main' : 'The test command does not pass on main yet' },
+    { key: 'github', label: 'GitHub connected', done: !!s.githubConnected, fix: 'ship',
+      text: s.githubConnected ? 'A GitHub repo is connected for pushing' : 'No GitHub repo is connected. Paste its URL in Ship' },
+    { key: 'autopush', label: 'Auto-push chosen', done: !!s.autoPush || autopushChosen(p.id), fix: 'autopush',
+      text: s.autoPush ? 'Merged work is pushed to GitHub automatically' : autopushChosen(p.id) ? 'You chose to push by hand' : 'Choose whether merged work is pushed to GitHub automatically' },
+    { key: 'plan', label: 'First plan approved', done: !!s.planApproved, fix: 'plan',
+      text: s.planApproved ? 'A plan has been approved' : 'Workers start once you approve a plan' },
+  ];
+}
+function setupFix(row, p) {
+  const btn = (text, fn) => h('button', { class: 'btn', onclick: fn }, text);
+  if (row.fix === 'readd') return btn('Re-add with origin', () => {
+    go({ view: 'projects' });
+    $('aCreate').checked = true; $('aPath').value = p.repo_path; $('aPath').focus();
+  });
+  if (row.fix === 'config') return btn('Set test command', () => { go({ view: 'projects' }); $('sCi').focus(); });
+  if (row.fix === 'ship') return btn('Open Ship', () => go({ view: 'ship' }));
+  if (row.fix === 'plan') return btn('Open plan', () => go({ view: 'plan' }));
+  return [
+    btn('Turn on', async () => { if (await post(`/api/projects/${p.id}/config`, { autoPush: true })) { toast('Auto-push on'); refresh(); } }),
+    h('button', { class: 'btn ghost', onclick: () => {
+      try { localStorage.setItem(autopushKey(p.id), '1'); } catch { /* storage unavailable */ }
+      renderOverview();
+    } }, 'Keep off'),
+  ];
+}
+// Returns null when there is nothing left to set up.
+function renderSetupChecklist(p) {
+  const rows = setupRows(p);
+  if (!rows.length || rows.every((r) => r.done)) return null;
+  return panel('Setup', `${rows.filter((r) => r.done).length} of ${rows.length}`, rows.map((r) => h('div', { class: 'srow' },
+    lamp(r.done ? 'ok' : 'wait'),
+    h('div', { class: 'sr-text' }, h('span', { text: r.label }), h('span', { text: r.text })),
+    h('div', { class: 'sr-act' }, h('span', { class: 'mono muted', text: r.done ? 'Done' : 'To do' }), r.done ? null : setupFix(r, p)))));
+}
 function renderOverview() {
   const p = proj(), ts = tasksOf(p.id).filter((t) => t.status !== 'cancelled');
   const { c, total, pct } = projectStats(p), [stText, stKind] = projectStatus(p);
@@ -1583,7 +1638,7 @@ function renderOverview() {
     h('span', { class: 'grow' }), h('span', { class: 'mono muted', text: p.auto_push ? 'Auto-push to GitHub on' : 'Auto-push off' }));
   if (!total) {
     const approval = needsApproval(p.id);
-    return put($('v-overview'), h('div', { class: 'ov' }, head, h('div', { class: 'empty' },
+    return put($('v-overview'), h('div', { class: 'ov' }, head, renderSetupChecklist(p), h('div', { class: 'empty' },
       h('h2', { text: approval ? 'Plan ready for review' : planningFor(p.id) ? 'Drafting a plan' : 'No tasks yet' }),
       h('p', { text: 'Progress, workers and estimates appear once a plan is approved' }),
       h('button', { class: 'btn', onclick: () => go({ view: 'plan' }) }, icon('plan'), approval ? 'Review plan' : 'Open plan'))));
@@ -1628,7 +1683,7 @@ function renderOverview() {
   ].filter(Boolean);
   const live = ts.filter((t) => t.status === 'running');
 
-  put($('v-overview'), h('div', { class: 'ov' }, head, h('div', { class: 'stats' }, hero, workers, etaCard),
+  put($('v-overview'), h('div', { class: 'ov' }, head, renderSetupChecklist(p), h('div', { class: 'stats' }, hero, workers, etaCard),
     h('div', { class: 'ov-grid' },
       h('div', { class: 'col' },
         panel('Progress by plan', null, planRows.length ? planRows : h('p', { class: 'none', text: 'No approved plans' })),
