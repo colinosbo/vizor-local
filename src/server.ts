@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import type { DB } from './db.js';
 import { setSetting } from './db.js';
 import { emit, eventsAfter, subscribe, type EventRow } from './events.js';
+import { planCancel } from './cancel.js';
 import { resolveLocalOrigin } from './forges.js';
 import { approvePlan, PlanInFlightError } from './plan.js';
 import type { PlanningService } from './planning.js';
@@ -185,6 +186,23 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
           // Owner-only route: merges a task held by plan supersession if every other merge check passes.
           try { return json(res, 200, { ok: true, ...runner.mergeAnyway(id) }); }
           catch (e) { return json(res, 400, { error: String((e as Error).message ?? e) }); }
+        }
+        if (a === 'tasks' && action === 'cancel') {
+          // Owner-only route (token cookie + Origin + JSON content-type checks above); deliberately POST-only.
+          // dryRun is a read-only planCancel preview: no DB writes, no events.
+          const reroute = body?.reroute !== false;
+          try {
+            const plan = planCancel(db, id);
+            if (body?.dryRun === true) {
+              return json(res, 200, { dryRun: true, task: { id: plan.task.id, key: plan.task.key, status: plan.task.status },
+                cancellable: plan.cancellable, ...(plan.reason ? { reason: plan.reason } : {}), reroute, reroutes: plan.reroutes });
+            }
+            runner.cancelTask(id, { reroute });
+            return json(res, 200, { ok: true, dryRun: false, reroutes: reroute ? plan.reroutes : [] });
+          } catch (e) {
+            const msg = String((e as Error).message ?? e);
+            return json(res, /not found/.test(msg) ? 404 : /^cannot cancel/.test(msg) ? 409 : 400, { error: msg });
+          }
         }
       }
       json(res, 404, { error: 'not found' });
