@@ -1629,6 +1629,7 @@ function taskCard(t) {
     run ? h('div', { class: 'act mono', 'data-act': t.id, title: activity.get(t.id) || null, text: activity.get(t.id) || '' }) : null,
     held ? h('p', { class: 'cause', title: t.hold_reason || held.cause, text: held.cause }) : null,
     held && held.action ? h('div', {}, h('button', { class: 'btn', onclick: (e) => { e.stopPropagation(); held.action.run(); } }, icon(held.action.icon), held.action.label)) : null,
+    canMergeAnyway(t) ? h('div', {}, h('button', { class: 'btn ghost', onclick: (e) => { e.stopPropagation(); openMergeAnyway(t); } }, icon('ship'), 'Merge anyway')) : null,
     run ? h('div', {}, h('button', { class: 'btn ghost', onclick: (e) => { e.stopPropagation(); cancelRun(run); } }, icon('x'), 'Cancel run')) : null);
 }
 // A held task's short cause and its one fix. Patterns mirror the hold_reason strings written by src/runner.ts and src/plan.ts.
@@ -1668,6 +1669,48 @@ function holdSummary(t) {
 async function retry(t) { if (await post(`/api/tasks/${encodeURIComponent(t.id)}/retry`)) { toast(`Retrying ${t.key}`); refresh(); } }
 async function cancelRun(a) { if (await post(`/api/attempts/${encodeURIComponent(a.id)}/cancel`)) toast('Cancel sent'); }
 
+// ----- Merge anyway: owner-only, only for tasks held by plan supersession; nothing is posted until the owner confirms -----
+const SUPERSEDED_HOLD = 'plan superseded while in flight; owner decision needed';
+const canMergeAnyway = (t) => !!t && t.status === 'blocked' && t.hold_reason === SUPERSEDED_HOLD;
+let mergeAnyway = null; // { taskId, busy, error }
+function openMergeAnyway(t) {
+  mergeAnyway = { taskId: t.id, busy: false, error: null };
+  if (view === 'run' && selTask === t.id) renderRun(); else go({ view: 'run', selTask: t.id });
+  document.querySelector('.guard [data-default]')?.focus();
+}
+function closeMergeAnyway() {
+  mergeAnyway = null;
+  renderRun();
+  document.querySelector('#run [data-merge-anyway]')?.focus();
+}
+function mergeAnywayPanel(t, st) {
+  const confirm = async () => {
+    st.busy = true; st.error = null; renderRun();
+    const ok = await post(`/api/tasks/${encodeURIComponent(t.id)}/merge-anyway`, {}, (m) => { st.error = m; });
+    st.busy = false;
+    if (ok) { mergeAnyway = null; toast(`Merged ${t.key} at ${short(ok.mergeSha)}`); refresh(); }
+    else renderRun();
+  };
+  const checks = [
+    'The pull request is still open',
+    t.head_sha ? `The required check is green on this exact head, ${short(t.head_sha)}` : 'The required check is green on this exact head commit',
+    'Every changed file is inside the task write scope',
+    'The branch is up to date with the base branch',
+  ];
+  return h('div', { class: 'guard', role: 'alertdialog', 'aria-labelledby': 'maTitle', 'aria-describedby': 'maBody',
+    onkeydown: (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeMergeAnyway(); }
+      else if (e.key === 'Enter' && !e.target.hasAttribute('data-confirm')) { e.preventDefault(); e.stopPropagation(); closeMergeAnyway(); }
+    } },
+    h('h2', { id: 'maTitle', text: `Merge ${t.key} anyway` }),
+    h('p', { id: 'maBody', text: 'The plan changed while this task was running. Merging anyway skips only the plan-approval check. Local still checks that' }),
+    h('ul', {}, checks.map((c) => h('li', {}, h('span', { class: 'grow', text: c })))),
+    st.error ? h('p', { class: 'note-bad', role: 'alert', 'data-merge-error': '', text: st.error }) : null,
+    h('div', { class: 'acts' },
+      h('button', { class: 'btn primary', 'data-default': '', onclick: closeMergeAnyway }, 'Cancel'),
+      h('button', { class: 'btn danger', 'data-confirm': '', disabled: st.busy, onclick: confirm }, st.busy ? 'Merging' : 'Merge anyway')));
+}
+
 // ----- Run -----
 function evText(e) {
   const d = e.d;
@@ -1684,6 +1727,8 @@ function evText(e) {
     case 'task_merged': return `verified ${short(d.mergeSha)}`;
     case 'branch_updated_from_base': return `branch updated, new head ${short(d.head)}`;
     case 'task_blocked': return d.reason;
+    case 'owner_override_merge': return `Owner merged ${state.tasks.find((x) => x.id === d.taskId)?.key || 'task'} anyway at ${short(d.headSha)}`;
+    case 'owner_override_merge_failed': return `Merge anyway failed, nothing merged: ${d.error}`;
     case 'runner_error': return d.error;
     default: { const s = JSON.stringify(d); return s === '{}' ? '' : s; }
   }
@@ -1698,6 +1743,7 @@ function evCopies(e) {
     case 'check_completed': case 'repair_scheduled': return [sha(d.sha, 'SHA')];
     case 'pr_merged': return [pr(d.pr), sha(d.mergeSha, 'SHA')];
     case 'task_merged': return [sha(d.mergeSha, 'SHA')];
+    case 'owner_override_merge': return [pr(d.prNumber), sha(d.headSha, 'SHA')];
     case 'branch_updated_from_base': return [sha(d.head, 'SHA')];
     default: return [];
   }
@@ -1725,11 +1771,13 @@ function renderRun() {
   put(runEl, 
     h('div', { style: 'display:flex; align-items:center; gap:16px' }, h('h1', { class: 'grow', style: 'overflow-wrap:anywhere', text: t.title }),
       t.status === 'blocked' ? h('button', { class: 'btn', onclick: () => retry(t) }, icon('retry'), 'Retry') : null,
+      canMergeAnyway(t) && mergeAnyway?.taskId !== t.id ? h('button', { class: 'btn', 'data-merge-anyway': '', onclick: () => openMergeAnyway(t) }, icon('ship'), 'Merge anyway') : null,
       active ? h('button', { class: 'btn ghost', onclick: () => cancelRun(active) }, icon('x'), 'Cancel run') : null),
     h('div', { class: 'facts' }, statusEl(t.status),
       t.pr_number ? h('span', { class: 'mono' }, `PR #${t.pr_number}`, copyBtn(t.pr_number, 'PR number')) : null,
       t.repair_count ? h('span', { class: 'mono', text: `${t.repair_count} repair${t.repair_count > 1 ? 's' : ''}` }) : null),
     t.hold_reason && t.status !== 'merged' ? h('p', { class: t.status === 'blocked' ? 'hold' : 't2', text: t.hold_reason }) : null,
+    canMergeAnyway(t) && mergeAnyway?.taskId === t.id ? mergeAnywayPanel(t, mergeAnyway) : null,
     atts.length ? h('div', { class: 'card', style: 'overflow:hidden' }, h('table', {},
       h('thead', {}, h('tr', {}, ['Attempt', 'Status', 'Exit', 'Started', 'Note'].map((x) => h('th', { text: x })))),
       h('tbody', {}, atts.map((a, i) => h('tr', {},
@@ -1967,6 +2015,7 @@ function boardKey(e) {
 document.addEventListener('keydown', (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable;
   if (e.key === 'Escape' && typing) return e.target.blur();
+  if (mergeAnyway && view === 'run' && e.key === 'Escape') return closeMergeAnyway();
   if (approveGuard && e.key === 'Escape') return closeApproveGuard();
   if (e.target.closest?.('.guard')) return;
   if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
