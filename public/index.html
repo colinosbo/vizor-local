@@ -143,7 +143,7 @@
   .rm-row .acts { display:flex; gap:4px; }
   .rm-err { grid-column:3 / -1; font-size:12px; line-height:16px; color:#f08a8d; padding-bottom:8px; overflow-wrap:anywhere; }
   .ship-commits { display:flex; flex-direction:column; border:1px solid var(--line); border-radius:8px; background:var(--deep); padding:4px 0; }
-  .ship-commits .c { display:grid; grid-template-columns:80px minmax(0,1fr); align-items:center; gap:12px; height:32px; padding:0 16px; font-size:13px; }
+  .ship-commits .c { display:grid; grid-template-columns:104px minmax(0,1fr); align-items:center; gap:12px; height:32px; padding:0 16px; font-size:13px; }
   .note-bad { color:#f08a8d; overflow-wrap:anywhere; }
   .canvas > *, .run > *, .narrow > * { flex:none; }
   .canvas-head { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
@@ -259,6 +259,10 @@
   .log .ln .ty { color:var(--text-2); }
   .log .ln .tx { white-space:pre-wrap; overflow-wrap:anywhere; color:var(--muted); }
   .log .ln.out .tx { color:var(--text); }
+  .copy { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; padding:0; margin-left:6px; vertical-align:middle; border:0; border-radius:4px; background:none; color:var(--muted); cursor:pointer; opacity:.6; transition:color .15s, background-color .15s, opacity .15s; }
+  .copy:hover, .copy:focus-visible { opacity:1; color:var(--text); background:var(--raised); }
+  .copy:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  .copy svg { width:14px; height:14px; }
 
   /* Projects / Ship */
   .split { display:grid; grid-template-columns:minmax(0,1fr) 360px; gap:24px; align-items:start; }
@@ -615,6 +619,25 @@ let toastTimer;
 function toast(text, bad) {
   const t = $('toast'); t.textContent = text; t.className = 'show' + (bad ? ' bad' : '');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.className = bad ? 'bad' : ''), bad ? 6000 : 3000);
+}
+// Quiet copy button: copies the full value (never the shortened display) and confirms with a toast.
+const COPY_ICON = '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>';
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch { /* fall back below */ }
+  const ta = h('textarea', { 'aria-hidden': 'true', tabindex: '-1', readonly: true, style: 'position:fixed; top:0; left:-9999px; opacity:0' });
+  ta.value = text; document.body.append(ta); ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { ok = false; }
+  ta.remove();
+  return ok;
+}
+function copyBtn(text, label) {
+  if (text == null || text === '') return null;
+  const value = String(text);
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('class', 'i'); svg.setAttribute('aria-hidden', 'true'); svg.innerHTML = COPY_ICON;
+  return h('button', { type: 'button', class: 'copy', title: 'Copy ' + label, 'aria-label': 'Copy ' + label,
+    onclick: async (ev) => { ev.stopPropagation(); if (await copyText(value)) toast('Copied ' + label); else toast('Could not copy ' + label, true); } }, svg);
 }
 // onError(message) replaces the error toast when a caller shows the message itself.
 async function post(path, body, onError) {
@@ -1557,6 +1580,20 @@ function evText(e) {
     default: { const s = JSON.stringify(d); return s === '{}' ? '' : s; }
   }
 }
+// Values worth copying from one event, as [fullValue, label]; the log shows them shortened.
+function evCopies(e) {
+  const d = e.d, sha = (v, l) => (v ? [v, l] : null), pr = (n) => (n ? [String(n), 'PR number'] : null);
+  switch (e.type) {
+    case 'worker_output': return d.kind === 'command' ? [[d.text, 'command']] : [];
+    case 'worktree_ready': return [d.path ? [d.path, 'worktree path'] : null, sha(d.baseSha, 'SHA')];
+    case 'pr_published': return [pr(d.pr), sha(d.head, 'SHA')];
+    case 'check_completed': case 'repair_scheduled': return [sha(d.sha, 'SHA')];
+    case 'pr_merged': return [pr(d.pr), sha(d.mergeSha, 'SHA')];
+    case 'task_merged': return [sha(d.mergeSha, 'SHA')];
+    case 'branch_updated_from_base': return [sha(d.head, 'SHA')];
+    default: return [];
+  }
+}
 function renderRun() {
   const p = proj();
   const tasks = tasksOf(p.id).filter((t) => t.status !== 'cancelled' || t.id === selTask)
@@ -1574,7 +1611,7 @@ function renderRun() {
   const active = atts.find((a) => a.status === 'running');
   const evs = events.filter((e) => e.task_id === t.id);
   const log = h('div', { class: 'log' }, evs.length ? evs.map((e) => h('div', { class: 'ln' + (e.type === 'worker_output' ? ' out' : '') },
-    h('span', { class: 'muted', text: hhmmss(new Date(e.ts)) }), h('span', { class: 'ty ellipsis', text: e.type === 'worker_output' ? e.d.kind : e.type.replace(/_/g, ' ') }), h('span', { class: 'tx', text: evText(e) })))
+    h('span', { class: 'muted', text: hhmmss(new Date(e.ts)) }), h('span', { class: 'ty ellipsis', text: e.type === 'worker_output' ? e.d.kind : e.type.replace(/_/g, ' ') }), h('span', { class: 'tx' }, evText(e), evCopies(e).map((c) => c && copyBtn(c[0], c[1])))))
     : h('div', { class: 'ln' }, h('span'), h('span'), h('span', { class: 'tx', text: 'No events yet' })));
   runEl.dataset.task = t.id;
   put(runEl, 
@@ -1582,7 +1619,7 @@ function renderRun() {
       t.status === 'blocked' ? h('button', { class: 'btn', onclick: () => retry(t) }, icon('retry'), 'Retry') : null,
       active ? h('button', { class: 'btn ghost', onclick: () => cancelRun(active) }, icon('x'), 'Cancel run') : null),
     h('div', { class: 'facts' }, statusEl(t.status),
-      t.pr_number ? h('span', { class: 'mono', text: `PR #${t.pr_number}` }) : null,
+      t.pr_number ? h('span', { class: 'mono' }, `PR #${t.pr_number}`, copyBtn(t.pr_number, 'PR number')) : null,
       t.repair_count ? h('span', { class: 'mono', text: `${t.repair_count} repair${t.repair_count > 1 ? 's' : ''}` }) : null),
     t.hold_reason && t.status !== 'merged' ? h('p', { class: t.status === 'blocked' ? 'hold' : 't2', text: t.hold_reason }) : null,
     atts.length ? h('div', { class: 'card', style: 'overflow:hidden' }, h('table', {},
@@ -1594,8 +1631,9 @@ function renderRun() {
         h('td', { class: 't2 ellipsis', style: 'max-width:360px', text: a.reason || '' })))))) : null,
     h('h2', { text: 'Activity log' }), log,
     disclosure('run:' + t.id, 'Git details', null,
-      h('div', { class: 'facts mono' }, t.branch, t.head_sha ? 'Head ' + short(t.head_sha) : null,
-        t.merge_sha ? 'Merge ' + short(t.merge_sha) : null), 'run-meta'));
+      h('div', { class: 'facts mono' }, h('span', {}, t.branch, copyBtn(t.branch, 'branch name')),
+        t.head_sha ? h('span', {}, 'Head ' + short(t.head_sha), copyBtn(t.head_sha, 'SHA')) : null,
+        t.merge_sha ? h('span', {}, 'Merge ' + short(t.merge_sha), copyBtn(t.merge_sha, 'SHA')) : null), 'run-meta'));
   log.scrollTop = atEnd ? log.scrollHeight : keep;
 }
 
@@ -1630,7 +1668,7 @@ function renderShip() {
     h('div', { style: 'display:flex; align-items:center; gap:16px' }, h('h2', { class: 'grow', text: 'Your folder' }),
       f && f.behind && !f.dirty && !f.ahead && f.branch === p.base_branch ? h('button', { class: 'btn', onclick: async () => {
         const r = await post(`/api/projects/${p.id}/sync`); if (r) { toast(r.synced ? 'Folder updated' : r.reason); loadShip(p.id, false); } } }, 'Update folder now') : null),
-    h('p', { class: 'mono t2', text: p.repo_path }),
+    h('p', { class: 'mono t2' }, p.repo_path, copyBtn(p.repo_path, 'folder path')),
     h('p', { class: 'status' }, lamp(f && f.branch === p.base_branch && !f.behind && !f.dirty && !f.ahead ? 'ok' : f ? 'wait' : ''), folderLine));
 
   // GitHub card
@@ -1649,7 +1687,7 @@ function renderShip() {
       : h('p', { class: 't2', text: `${n} commit${n > 1 ? 's' : ''} on Local's main that GitHub does not have` });
     const confirming = shipConfirm === p.id;
     gh = [h('p', { class: 'mono t2', text: d.remote }), line,
-      n && !d.behind && !d.fetchError ? h('div', { class: 'ship-commits' }, d.ahead.slice(0, 10).map((x) => h('div', { class: 'c' }, h('span', { class: 'mono muted', text: x.sha.slice(0, 8) }), h('span', { class: 'ellipsis', text: x.subject }))),
+      n && !d.behind && !d.fetchError ? h('div', { class: 'ship-commits' }, d.ahead.slice(0, 10).map((x) => h('div', { class: 'c' }, h('span', { class: 'mono muted' }, x.sha.slice(0, 8), copyBtn(x.sha, 'SHA')), h('span', { class: 'ellipsis', text: x.subject }))),
         n > 10 ? h('div', { class: 'c' }, h('span'), h('span', { class: 'muted', text: `+${n - 10} more` })) : null) : null,
       h('div', { style: 'display:flex; gap:8px; align-items:center; flex-wrap:wrap' },
         confirming
@@ -1672,7 +1710,7 @@ function renderShip() {
       h('thead', {}, h('tr', {}, ['Task', 'Plan', 'PR', 'Merge commit', 'Status'].map((x) => h('th', { text: x })))),
       h('tbody', {}, merged.map((t) => h('tr', {},
         h('td', {}, h('button', { class: 'btn ghost project-link', onclick: () => go({ view: 'run', selTask: t.id }), text: t.title })), h('td', { class: 'mono t2', text: 'v' + (planFor(t.plan_id)?.version ?? '') }),
-        h('td', { class: 'mono t2', text: t.pr_number ? '#' + t.pr_number : '' }), h('td', { class: 'mono', text: short(t.merge_sha) }), h('td', {}, statusEl(t.status)))))))
+        h('td', { class: 'mono t2' }, t.pr_number ? '#' + t.pr_number : '', copyBtn(t.pr_number, 'PR number')), h('td', { class: 'mono' }, short(t.merge_sha), copyBtn(t.merge_sha, 'SHA')), h('td', {}, statusEl(t.status)))))))
       : h('p', { class: 'muted', text: 'Nothing merged yet' })));
 }
 
