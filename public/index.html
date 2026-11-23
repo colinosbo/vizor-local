@@ -497,9 +497,9 @@
             <li><span class="mono">2</span>Describe what to build</li>
             <li><span class="mono">3</span>Approve the plan</li>
           </ol>
-          <div><button class="btn primary" type="button" id="npFirst">Add your first project</button></div>
+          <div><button class="btn" type="button" id="npFirst">Add your first project</button></div>
         </div>
-        <div id="npMore" hidden><button class="btn primary" type="button" id="npOpen">New project</button></div>
+        <div id="npMore" hidden><button class="btn" type="button" id="npOpen">New project</button></div>
         <form class="card form newp" id="npForm" hidden>
           <h2>New project</h2>
           <div class="seg words" role="group" aria-label="Where the project lives">
@@ -1038,6 +1038,9 @@ function renderNewProject() {
   $('hHead').hidden = $('hStrip').hidden = $('homeGrid').hidden = first;
   document.querySelector('#v-home .ov').classList.toggle('first', first);
   $('npStart').hidden = !first;
+  // The static markup keeps only the form's submit as primary; the opener takes that role while the form is closed
+  $('npFirst').classList.toggle('primary', !npOpen);
+  $('npOpen').classList.toggle('primary', !npOpen);
   $('npFirst').hidden = npOpen; // the open form's submit is then the only primary
   $('npMore').hidden = first || npOpen;
   $('npForm').hidden = !npOpen;
@@ -2253,7 +2256,8 @@ function renderShip() {
               } }, icon('ship'), `Confirm: push ${n} to ${p.base_branch}`),
              h('button', { class: 'btn ghost', onclick: () => { shipConfirm = null; renderShip(); } }, 'Cancel'),
              h('span', { class: 'muted', style: 'font-size:13px', text: 'Fast-forward only. Uses your own git sign-in' })]
-          : h('button', { class: 'btn primary', disabled: !d.canPush || !!c.loading, onclick: () => askPush(p.id) }, icon('ship'), n ? `Push ${n} commit${n > 1 ? 's' : ''} to GitHub` : 'Push to GitHub'))];
+          // Promoted to primary after render: only one of the two push buttons exists at a time
+          : h('button', { class: 'btn', 'data-push': '', disabled: !d.canPush || !!c.loading, onclick: () => askPush(p.id) }, icon('ship'), n ? `Push ${n} commit${n > 1 ? 's' : ''} to GitHub` : 'Push to GitHub'))];
   }
   put($('v-ship'), h('div', { class: 'narrow' },
     h('div', { style: 'display:flex; align-items:center; gap:16px' }, h('h1', { class: 'grow', text: 'Ship' }), recheck),
@@ -2266,6 +2270,7 @@ function renderShip() {
         h('td', {}, h('button', { class: 'btn ghost project-link', onclick: () => go({ view: 'run', selTask: t.id }), text: t.title })), h('td', { class: 'mono t2', text: 'v' + (planFor(t.plan_id)?.version ?? '') }),
         h('td', { class: 'mono t2' }, t.pr_number ? '#' + t.pr_number : '', copyBtn(t.pr_number, 'PR number')), h('td', { class: 'mono' }, short(t.merge_sha), copyBtn(t.merge_sha, 'SHA')), h('td', {}, statusEl(t.status)))))))
       : emptyState('Nothing merged yet', 'Each task that merges into your local main will be listed here')));
+  $('v-ship').querySelector('[data-push]')?.classList.add('primary');
 }
 
 // ----- Projects -----
