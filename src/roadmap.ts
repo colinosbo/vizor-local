@@ -1,10 +1,12 @@
-import type { DB } from './db.js';
+import { tx, type DB } from './db.js';
 import { emit } from './events.js';
 import type { PlanningService } from './planning.js';
 import type { Project } from './types.js';
 
 export type PhaseStatus = 'queued' | 'drafting' | 'review' | 'running' | 'done' | 'failed';
 export interface PhaseRow { id: number; project_id: string; position: number; title: string; prompt: string; status: PhaseStatus; plan_id: number | null; error: string | null }
+
+const MAX_PHASES = 50;
 
 /**
  * Split pasted roadmap text into phases. Phases are separated by a line containing only `---`;
@@ -23,6 +25,12 @@ export function parseRoadmap(text: string): { title: string; prompt: string }[] 
  * Runs a project's phases in order. It only ever DRAFTS the next plan; the owner still approves every plan.
  * queued → drafting → review (plan drafted) → running (owner approved) → done (all tasks merged).
  * A phase whose plan fails or is declined becomes `failed` and the roadmap stops until the owner retries it.
+ *
+ * The queue is editable: insert/move/edit work only on `queued` phases, and a new or moved phase must stay
+ * after every non-queued phase. remove also works on `failed` and `review` phases (removing a review phase
+ * supersedes its draft plan). drafting, running and done phases are read-only. Every mutation runs in a
+ * transaction and re-reads status inside it, because tick() may advance phases concurrently; positions are
+ * kept contiguous (1..n) and a project holds at most 50 phases.
  */
 export class RoadmapService {
   constructor(private db: DB, private planning: PlanningService) {
@@ -56,11 +64,101 @@ export class RoadmapService {
     emit(this.db, { projectId: ph.project_id, type: 'roadmap_updated', data: { retried: id } });
   }
 
+  private get(id: number) { return this.db.prepare('SELECT * FROM phases WHERE id=?').get(id) as unknown as PhaseRow | undefined; }
+
+  /** Make positions 1..n contiguous in the current order. */
+  private renumber(projectId: string) {
+    const upd = this.db.prepare('UPDATE phases SET position=? WHERE id=?');
+    this.phases(projectId).forEach((ph, i) => { if (ph.position !== i + 1) upd.run(i + 1, ph.id); });
+  }
+
+  /** 1-based position of the last phase that is not 'queued' (0 when every phase is queued). */
+  private lastLocked(rows: PhaseRow[]) {
+    let last = 0;
+    rows.forEach((ph, i) => { if (ph.status !== 'queued') last = i + 1; });
+    return last;
+  }
+
+  private static clean(title: unknown, prompt: unknown) {
+    const t = typeof title === 'string' ? title.trim() : '';
+    if (!t) throw new Error('title is required');
+    if (t.length > 120) throw new Error('title must be at most 120 characters');
+    if (typeof prompt !== 'string' || !prompt.trim()) throw new Error('prompt is required');
+    if (prompt.length > 4000) throw new Error('prompt must be at most 4000 characters');
+    return { title: t, prompt };
+  }
+
+  /** Insert a new queued phase at a 1-based position; it must come after every non-queued phase. */
+  insert(projectId: string, position: number, title: string, prompt: string): PhaseRow[] {
+    const v = RoadmapService.clean(title, prompt);
+    return tx(this.db, () => {
+      if (!this.project(projectId)) throw new Error(`unknown project ${projectId}`);
+      const rows = this.phases(projectId);
+      if (rows.length >= MAX_PHASES) throw new Error(`a project can have at most ${MAX_PHASES} phases`);
+      if (!Number.isInteger(position) || position < 1 || position > rows.length + 1) throw new Error(`position must be a whole number from 1 to ${rows.length + 1}`);
+      const locked = this.lastLocked(rows);
+      if (position <= locked) throw new Error(`a new phase cannot go ahead of phases that have already started; the earliest position is ${locked + 1}`);
+      this.db.prepare('UPDATE phases SET position=position+1 WHERE project_id=? AND position>=?').run(projectId, position);
+      const r = this.db.prepare('INSERT INTO phases(project_id, position, title, prompt) VALUES (?,?,?,?)').run(projectId, position, v.title, v.prompt);
+      this.renumber(projectId);
+      emit(this.db, { projectId, type: 'roadmap_updated', data: { inserted: Number(r.lastInsertRowid), position, title: v.title } });
+      return this.phases(projectId);
+    });
+  }
+
+  /** Move a queued phase to a 1-based position within the queued block. */
+  move(id: number, toPosition: number): PhaseRow[] {
+    return tx(this.db, () => {
+      const ph = this.get(id);
+      if (!ph) throw new Error('unknown phase');
+      if (ph.status !== 'queued') throw new Error(`a ${ph.status} phase is read-only; only queued phases can be moved`);
+      const rows = this.phases(ph.project_id);
+      const locked = this.lastLocked(rows);
+      const from = rows.findIndex((r) => r.id === id) + 1;
+      if (from <= locked) throw new Error('this phase sits before a phase that has already started and cannot be moved');
+      if (!Number.isInteger(toPosition) || toPosition <= locked || toPosition > rows.length) throw new Error(`position must be a whole number from ${locked + 1} to ${rows.length}`);
+      if (toPosition !== from) {
+        const order = rows.map((r) => r.id);
+        order.splice(from - 1, 1);
+        order.splice(toPosition - 1, 0, id);
+        const upd = this.db.prepare('UPDATE phases SET position=? WHERE id=?');
+        order.forEach((pid, i) => upd.run(i + 1, pid));
+        emit(this.db, { projectId: ph.project_id, type: 'roadmap_updated', data: { moved: id, from, to: toPosition } });
+      }
+      return this.phases(ph.project_id);
+    });
+  }
+
+  /** Edit the title and/or prompt of a queued phase. */
+  edit(id: number, fields: { title?: string; prompt?: string }): PhaseRow {
+    return tx(this.db, () => {
+      const ph = this.get(id);
+      if (!ph) throw new Error('unknown phase');
+      if (ph.status !== 'queued') throw new Error(`a ${ph.status} phase is read-only; only queued phases can be edited`);
+      if (fields.title === undefined && fields.prompt === undefined) throw new Error('nothing to edit: give a title and/or prompt');
+      const v = RoadmapService.clean(fields.title ?? ph.title, fields.prompt ?? ph.prompt);
+      this.db.prepare("UPDATE phases SET title=?, prompt=?, updated_at=datetime('now') WHERE id=?").run(v.title, v.prompt, id);
+      emit(this.db, { projectId: ph.project_id, type: 'roadmap_updated', data: { edited: id, fields: Object.keys(fields).filter((k) => k === 'title' || k === 'prompt') } });
+      return this.get(id)!;
+    });
+  }
+
   remove(id: number) {
-    const ph = this.db.prepare('SELECT * FROM phases WHERE id=?').get(id) as unknown as PhaseRow | undefined;
-    if (!ph || !['queued', 'failed'].includes(ph.status)) throw new Error('only a queued or failed phase can be removed');
-    this.db.prepare('DELETE FROM phases WHERE id=?').run(id);
-    emit(this.db, { projectId: ph.project_id, type: 'roadmap_updated', data: { removed: id } });
+    tx(this.db, () => {
+      const ph = this.get(id);
+      if (!ph) throw new Error('unknown phase');
+      if (!['queued', 'failed', 'review'].includes(ph.status)) throw new Error(`a ${ph.status} phase is read-only; only a queued or failed phase (or a review phase) can be removed`);
+      let discarded: number | null = null;
+      if (ph.status === 'review' && ph.plan_id) {
+        const plan = this.db.prepare('SELECT status FROM plans WHERE id=?').get(ph.plan_id) as { status: string } | undefined;
+        if (plan?.status === 'approved') throw new Error('its plan was just approved, so this phase can no longer be removed');
+        if (plan?.status === 'draft') { this.db.prepare("UPDATE plans SET status='superseded' WHERE id=?").run(ph.plan_id); discarded = ph.plan_id; }
+      }
+      this.db.prepare('DELETE FROM phases WHERE id=?').run(id);
+      this.renumber(ph.project_id);
+      if (discarded !== null) emit(this.db, { projectId: ph.project_id, type: 'plan_discarded', data: { planId: discarded, phase: id } });
+      emit(this.db, { projectId: ph.project_id, type: 'roadmap_updated', data: { removed: id } });
+    });
   }
 
   pause(projectId: string, paused: boolean) {

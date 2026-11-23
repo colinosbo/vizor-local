@@ -162,6 +162,9 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
         if (a === 'projects' && action === 'roadmap-pause') { (opts.roadmap ?? fail('roadmap not enabled')).pause(id, !!body.paused); return json(res, 200, { ok: true }); }
         if (a === 'phases' && action === 'retry') { (opts.roadmap ?? fail('roadmap not enabled')).retry(Number(id)); return json(res, 200, { ok: true }); }
         if (a === 'phases' && action === 'remove') { (opts.roadmap ?? fail('roadmap not enabled')).remove(Number(id)); return json(res, 200, { ok: true }); }
+        if (a === 'projects' && action === 'phases') return json(res, 200, (opts.roadmap ?? fail('roadmap not enabled')).insert(id, Number(body.position), String(body.title ?? ''), String(body.prompt ?? '')));
+        if (a === 'phases' && action === 'move') return json(res, 200, (opts.roadmap ?? fail('roadmap not enabled')).move(Number(id), Number(body.position)));
+        if (a === 'phases' && action === 'edit') return json(res, 200, (opts.roadmap ?? fail('roadmap not enabled')).edit(Number(id), { title: body.title === undefined ? undefined : String(body.title), prompt: body.prompt === undefined ? undefined : String(body.prompt) }));
         if (a === 'plans' && action === 'approve') {
           // Owner-only route. Only a strict JSON boolean `true` forces; "true", 1, etc. do not.
           try { approvePlan(db, Number(id), body?.force === true ? { force: true } : {}); }
