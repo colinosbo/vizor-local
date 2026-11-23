@@ -12,7 +12,12 @@ export interface PhaseRow {
   id: number; project_id: string; position: number; title: string; prompt: string; status: PhaseStatus; plan_id: number | null; error: string | null;
   approve_mode: ApproveMode;  // 'off' = this phase always waits for the owner
   auto_note: string | null;   // why a phase in review was not auto-approved
+  done_note: string | null;   // why a done phase finished without merged work; NULL for a normal finish
 }
+
+const NOTE_CANCELLED = 'tasks cancelled';
+const NOTE_OWNER = 'marked done by owner';
+const OPEN_COUNTS = `SELECT COUNT(*) AS n, SUM(status='merged') AS merged, SUM(status NOT IN ('merged','cancelled')) AS open FROM tasks WHERE plan_id=?`;
 
 const MAX_PHASES = 50;
 
@@ -125,7 +130,12 @@ export function parseRoadmap(text: string): { title: string; prompt: string }[] 
  * and touches no protected path (merge/plan code, package.json, CI config, .github/.claude/skills). It calls
  * approvePlan without `force`; a refusal leaves the phase in review with a 'needs you' note. A failed or
  * blocked task halts auto-approve until the owner resumes it. The planner/orchestrator never approves.
- * queued → drafting → review (plan drafted) → running (approved) → done (all tasks merged).
+ * queued → drafting → review (plan drafted) → running (approved) → done (no open task left).
+ * A running phase finishes when every task of its plan is merged or cancelled: with at least one merged task
+ * done_note stays NULL; with every task cancelled it finishes with done_note 'tasks cancelled'. Either way the
+ * roadmap then drafts the next queued phase (auto-approve still needs merged work, so that phase waits for the
+ * owner). The owner can also markDone a running phase with no open task (including a plan with no tasks);
+ * done_note is then 'marked done by owner', or 'tasks cancelled' when nothing was merged.
  * A phase whose plan fails or is declined becomes `failed` and the roadmap stops until the owner retries it.
  *
  * The queue is editable: insert/move/edit work only on `queued` phases, and a new or moved phase must stay
@@ -141,7 +151,7 @@ export class RoadmapService {
   }
 
   phases(projectId: string) { return this.db.prepare('SELECT * FROM phases WHERE project_id=? ORDER BY position, id').all(projectId) as unknown as PhaseRow[]; }
-  private set(id: number, f: { status?: PhaseStatus; plan_id?: number | null; error?: string | null; auto_note?: string | null }) {
+  private set(id: number, f: { status?: PhaseStatus; plan_id?: number | null; error?: string | null; auto_note?: string | null; done_note?: string | null }) {
     const keys = Object.keys(f);
     this.db.prepare(`UPDATE phases SET ${keys.map((k) => `${k}=?`).join(', ')}, updated_at=datetime('now') WHERE id=?`).run(...(Object.values(f) as (string | number | null)[]), id);
   }
@@ -164,6 +174,24 @@ export class RoadmapService {
     if (!ph || ph.status !== 'failed') throw new Error('only a failed phase can be retried');
     this.set(id, { status: 'queued', error: null, plan_id: null });
     emit(this.db, { projectId: ph.project_id, type: 'roadmap_updated', data: { retried: id } });
+  }
+
+  /**
+   * Owner-only: finish a running phase whose plan has no open task (every task merged or cancelled, or no tasks).
+   * The note is 'marked done by owner', or 'tasks cancelled' when nothing in the plan was merged.
+   */
+  markDone(id: number) {
+    tx(this.db, () => {
+      const ph = this.get(id);
+      if (!ph) throw new Error('unknown phase');
+      if (ph.status !== 'running') throw new Error(`a ${ph.status} phase cannot be marked done; only a running phase can`);
+      const c = (ph.plan_id ? this.db.prepare(OPEN_COUNTS).get(ph.plan_id) : { n: 0, merged: 0, open: 0 }) as { n: number; merged: number | null; open: number | null };
+      const open = c.open ?? 0;
+      if (open > 0) throw new Error(`this phase still has ${open} open task${open === 1 ? '' : 's'}; cancel or finish ${open === 1 ? 'it' : 'them'} first`);
+      const note = (c.merged ?? 0) > 0 ? NOTE_OWNER : NOTE_CANCELLED;
+      this.set(id, { status: 'done', done_note: note });
+      emit(this.db, { projectId: ph.project_id, type: 'phase_done', data: { phase: id, title: ph.title, note } });
+    });
   }
 
   private get(id: number) { return this.db.prepare('SELECT * FROM phases WHERE id=?').get(id) as unknown as PhaseRow | undefined; }
@@ -348,10 +376,14 @@ export class RoadmapService {
         else if (plan?.status === 'superseded') this.set(ph.id, { status: 'failed', error: 'its plan was replaced by another plan before approval' });
       }
       if (ph.status === 'running' && ph.plan_id) {
-        const c = this.db.prepare(`SELECT COUNT(*) AS n, SUM(status='merged') AS merged, SUM(status NOT IN ('merged','cancelled')) AS open FROM tasks WHERE plan_id=?`).get(ph.plan_id) as { n: number; merged: number; open: number };
+        const c = this.db.prepare(OPEN_COUNTS).get(ph.plan_id) as { n: number; merged: number | null; open: number | null };
         const plan = this.db.prepare('SELECT status FROM plans WHERE id=?').get(ph.plan_id) as { status: string } | undefined;
-        if (c.n > 0 && (c.open ?? 0) === 0 && (c.merged ?? 0) > 0) { this.set(ph.id, { status: 'done' }); emit(this.db, { projectId: pid, type: 'phase_done', data: { phase: ph.id, title: ph.title } }); }
-        else if (plan?.status === 'superseded') this.set(ph.id, { status: 'failed', error: 'its plan was replaced by a newer plan while running' });
+        if (c.n > 0 && (c.open ?? 0) === 0) {
+          // Every task is merged or cancelled. With nothing merged the phase finishes with a note, so the roadmap moves on.
+          const note = (c.merged ?? 0) > 0 ? null : NOTE_CANCELLED;
+          this.set(ph.id, { status: 'done', done_note: note });
+          emit(this.db, { projectId: pid, type: 'phase_done', data: { phase: ph.id, title: ph.title, ...(note ? { note } : {}) } });
+        } else if (plan?.status === 'superseded') this.set(ph.id, { status: 'failed', error: 'its plan was replaced by a newer plan while running' });
       }
     }
     const now = this.phases(pid);

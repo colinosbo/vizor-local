@@ -167,6 +167,7 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
         if (a === 'projects' && action === 'roadmap') return json(res, 200, (opts.roadmap ?? fail('roadmap not enabled')).add(id, String(body.text ?? '')));
         if (a === 'projects' && action === 'roadmap-pause') { (opts.roadmap ?? fail('roadmap not enabled')).pause(id, !!body.paused); return json(res, 200, { ok: true }); }
         if (a === 'phases' && action === 'retry') { (opts.roadmap ?? fail('roadmap not enabled')).retry(Number(id)); return json(res, 200, { ok: true }); }
+        if (a === 'phases' && action === 'mark-done') { (opts.roadmap ?? fail('roadmap not enabled')).markDone(Number(id)); return json(res, 200, { ok: true }); }
         if (a === 'phases' && action === 'remove') { (opts.roadmap ?? fail('roadmap not enabled')).remove(Number(id)); return json(res, 200, { ok: true }); }
         if (a === 'projects' && action === 'phases') return json(res, 200, (opts.roadmap ?? fail('roadmap not enabled')).insert(id, Number(body.position), String(body.title ?? ''), String(body.prompt ?? '')));
         if (a === 'phases' && action === 'move') return json(res, 200, (opts.roadmap ?? fail('roadmap not enabled')).move(Number(id), Number(body.position)));

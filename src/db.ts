@@ -120,6 +120,7 @@ CREATE TABLE IF NOT EXISTS phases (
   error TEXT,
   approve_mode TEXT NOT NULL DEFAULT 'inherit',  -- inherit|off (validated in code)
   auto_note TEXT,                                -- why a phase in review needs the owner
+  done_note TEXT,                                -- why a done phase finished without merged work (NULL = normal finish)
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 `;
@@ -132,7 +133,7 @@ export function openDb(path: string): DB {
     auto_push: 'INTEGER NOT NULL DEFAULT 0', auto_pushed_sha: 'TEXT', auto_push_error: 'TEXT',
     auto_approve: 'INTEGER NOT NULL DEFAULT 0', auto_approve_halted: 'TEXT' });
   ensureColumns(db, 'tasks', { usage_retry_at: 'INTEGER', model: 'TEXT', model_why: 'TEXT' });
-  ensureColumns(db, 'phases', { approve_mode: "TEXT NOT NULL DEFAULT 'inherit'", auto_note: 'TEXT' });
+  ensureColumns(db, 'phases', { approve_mode: "TEXT NOT NULL DEFAULT 'inherit'", auto_note: 'TEXT', done_note: 'TEXT' });
   return db;
 }
 
