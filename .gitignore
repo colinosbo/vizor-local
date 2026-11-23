@@ -4,3 +4,11 @@ dist/
 *.db-*
 worktrees/
 private/
+.env*
+*.pem
+*.key
+server.json
+*.log
+.claude/settings.local.json
+.local-poc/
+.DS_Store
