@@ -120,6 +120,7 @@
   .status { display:inline-flex; align-items:center; gap:8px; font-size:13px; color:var(--text-2); white-space:nowrap; }
   .empty { display:flex; flex-direction:column; gap:12px; align-items:flex-start; max-width:440px; padding:24px 0; color:var(--text-2); }
   .empty h2 { color:var(--text); }
+  .panel .empty, .pal .empty { padding:12px 20px; }
 
   /* Plan view */
   #v-plan { display:grid; grid-template-columns:400px minmax(0,1fr); overflow:hidden; }
@@ -598,7 +599,7 @@
       <span class="mono" id="palCount" aria-live="polite"></span>
     </div>
     <div class="pal-list" id="palList" role="listbox" aria-label="Results"></div>
-    <p class="pal-none" id="palNone" hidden>No matches</p>
+    <div class="pal-none" id="palNone" hidden></div>
     <div class="pal-foot" id="palFoot"></div>
   </div>
 </div>
@@ -620,6 +621,11 @@ const h = (tag, props, ...kids) => {
 };
 // replaceChildren(null) would insert the text "null": drop empty slots first.
 const put = (node, ...kids) => node.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
+// Empty state: what the view shows, why it is empty now, and at most one next action ({ label, onclick, icon }).
+function emptyState(what, why, action) {
+  return h('div', { class: 'empty' }, h('h2', { text: what }), h('p', { text: why }),
+    action ? h('button', { class: 'btn', type: 'button', onclick: action.onclick }, action.icon ? icon(action.icon) : null, action.label) : null);
+}
 const NS = 'http://www.w3.org/2000/svg';
 const ICONS = { // lucide paths (constant strings)
   home: '<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
@@ -1135,7 +1141,8 @@ function renderPlan() {
   put(thread, ...(msgs.length ? msgs.map((m) => h('div', { class: 'msg ' + m.role },
     h('div', { class: 'who' }, h('span', { text: m.role === 'user' ? 'You' : m.role === 'system' ? 'Local' : 'Planner' }), h('span', { class: 'mono', text: hhmm(sqlTime(m.created_at)) })),
     h('div', { class: 'body', text: m.text })))
-    : [h('p', { class: 'muted', style: 'font-size:13px', text: 'Describe a change to draft a plan for your approval' })]));
+    : [emptyState('No requests yet', 'You have not asked for a change in this project',
+      { label: 'Write a request', onclick: () => $('chatIn').focus() })]));
   if (atEnd) thread.scrollTop = thread.scrollHeight;
   const req = state.planning.find((r) => r.projectId === p.id);
   $('send').disabled = !!req; $('chatIn').disabled = !!req;
@@ -1209,8 +1216,8 @@ function planCanvas(p) {
   if (le && (le.type === 'plan_failed' || le.type === 'plan_declined') && !dismissed.has(le.seq)) out.push(outcomePanel(le, p.id));
   const plans = plansOf(p.id);
   if (!plans.length) {
-    out.push(h('div', { class: 'empty' }, h('h2', { text: 'No plan yet' }),
-      h('p', { text: 'Use the request box to draft tasks and review what each one can change' })));
+    out.push(emptyState('Plan', 'No plan has been drafted for this project yet',
+      { label: 'Write a request', onclick: () => $('chatIn').focus() }));
     return out;
   }
   const plan = plans.find((x) => x.id === selPlan[p.id]) || plans[0];
@@ -1638,10 +1645,9 @@ function renderOverview() {
     h('span', { class: 'grow' }), h('span', { class: 'mono muted', text: p.auto_push ? 'Auto-push to GitHub on' : 'Auto-push off' }));
   if (!total) {
     const approval = needsApproval(p.id);
-    return put($('v-overview'), h('div', { class: 'ov' }, head, renderSetupChecklist(p), h('div', { class: 'empty' },
-      h('h2', { text: approval ? 'Plan ready for review' : planningFor(p.id) ? 'Drafting a plan' : 'No tasks yet' }),
-      h('p', { text: 'Progress, workers and estimates appear once a plan is approved' }),
-      h('button', { class: 'btn', onclick: () => go({ view: 'plan' }) }, icon('plan'), approval ? 'Review plan' : 'Open plan'))));
+    return put($('v-overview'), h('div', { class: 'ov' }, head, renderSetupChecklist(p), emptyState('Project progress',
+      approval ? 'A plan is waiting for your approval, so no tasks exist yet' : planningFor(p.id) ? 'A plan is being drafted, so no tasks exist yet' : 'No plan has been approved, so no tasks exist yet',
+      { label: approval ? 'Review plan' : 'Open plan', icon: 'plan', onclick: () => go({ view: 'plan' }) }))));
   }
   const eta = etaFor(p), unplanned = (state.phases || []).filter((x) => x.project_id === p.id && ['queued', 'drafting', 'review', 'failed'].includes(x.status)).length;
   const etaRef = eta.kind === 'eta'
@@ -1686,20 +1692,23 @@ function renderOverview() {
   put($('v-overview'), h('div', { class: 'ov' }, head, renderSetupChecklist(p), h('div', { class: 'stats' }, hero, workers, etaCard),
     h('div', { class: 'ov-grid' },
       h('div', { class: 'col' },
-        panel('Progress by plan', null, planRows.length ? planRows : h('p', { class: 'none', text: 'No approved plans' })),
+        panel('Progress by plan', null, planRows.length ? planRows : emptyState('No approved plans', 'Progress per plan shows here once a plan is approved',
+          { label: 'Open plan', icon: 'plan', onclick: () => go({ view: 'plan' }) })),
         phases.length ? panel('Roadmap', `${phases.filter((x) => x.status === 'done').length} of ${phases.length}`, phases.map((ph) => {
           const [label, kind] = PH[ph.status] || [ph.status, ''];
           return h('div', { class: 'lrow' }, lamp(kind), h('span', { class: 'ellipsis', text: ph.title }), h('span', { class: 'mono muted', text: label }));
         })) : null,
         panel('Recently merged', null, merged.length ? merged.map((t) => h('div', { class: 'lrow' }, lamp('ok'), h('span', { class: 'ellipsis', text: t.title }),
-          h('span', { class: 'mono muted', text: (t.pr_number ? `#${t.pr_number} · ` : '') + ago(sqlTime(t.updated_at)) }))) : h('p', { class: 'none', text: 'Nothing merged yet' }))),
+          h('span', { class: 'mono muted', text: (t.pr_number ? `#${t.pr_number} · ` : '') + ago(sqlTime(t.updated_at)) }))) : emptyState('Nothing merged yet', 'The last five merged tasks will appear here as they land'))),
       h('div', { class: 'col' },
-        panel('Needs you', attn.length || null, attn.length ? attn : h('p', { class: 'none', text: 'Nothing needs you' }),
+        panel('Needs you', attn.length || null, attn.length ? attn : emptyState('Nothing needs you', 'Held tasks, failed pushes and plans to approve will appear here'),
           due.length > 1 ? h('button', { class: 'btn', onclick: () => retryMany(due) }, icon('retry'), 'Retry all') : null),
         panel('Running now', live.length || null, live.length ? live.map((t) => {
           const a = state.attempts.find((x) => x.task_id === t.id && x.status === 'running');
           return h('div', { class: 'lrow' }, lamp('live'), h('span', { class: 'ellipsis', text: t.title }), h('span', { class: 'mono muted', text: a ? fmtDur(Date.now() - sqlTime(a.started_at).getTime()) : '' }));
-        }) : h('p', { class: 'none', text: p.paused ? 'Dispatch paused' : 'No worker is running' }))))));
+        }) : p.paused
+          ? emptyState('No worker is running', 'Dispatch is paused, so no task will start', { label: 'Resume dispatch', icon: 'play', onclick: togglePause })
+          : emptyState('No worker is running', 'Tasks that are ready will start here when a worker is free'))))));
 }
 
 // ----- Board: status columns x swimlanes (by plan, by dependency wave, or none) -----
@@ -1765,18 +1774,21 @@ function renderBoard() {
   if (!all.length) {
     forgetBoardColumns();
     const approval = needsApproval(p.id);
-    const title = approval ? 'Plan ready for review' : planningFor(p.id) ? 'Drafting a plan' : plans.length ? 'No tasks' : 'No approved tasks yet';
-    return put($('v-board'), header, h('div', { class: 'empty board-empty' }, h('h2', { text: title }),
-      h('button', { class: 'btn', onclick: () => go({ view: 'plan' }) }, icon('plan'), approval ? 'Review plan' : 'Open plan')));
+    const why = approval ? 'A plan is waiting for your approval, so there are no cards yet' : planningFor(p.id) ? 'A plan is being drafted, so there are no cards yet'
+      : plans.length ? 'Every task in the approved plans was cancelled' : 'No plan has been approved, so there are no cards yet';
+    const empty = emptyState('Board', why, { label: approval ? 'Review plan' : 'Open plan', icon: 'plan', onclick: () => go({ view: 'plan' }) });
+    empty.classList.add('board-empty');
+    return put($('v-board'), header, empty);
   }
   if (!shown.length) {
     forgetBoardColumns();
-    return put($('v-board'), header, h('div', { class: 'empty board-empty' }, h('h2', { text: `Nothing under ${fDef[1]}` }),
-      h('button', { class: 'btn', onclick: () => {
-        setBoardFilter(p.id, 'all');
-        renderBoard();
-        $('v-board').querySelector('.filters [aria-pressed="true"]')?.focus();
-      } }, 'Show all')));
+    const empty = emptyState(`Board, ${fDef[1]}`, `No task matches the ${fDef[1]} filter right now`, { label: 'Show all', onclick: () => {
+      setBoardFilter(p.id, 'all');
+      renderBoard();
+      $('v-board').querySelector('.filters [aria-pressed="true"]')?.focus();
+    } });
+    empty.classList.add('board-empty');
+    return put($('v-board'), header, empty);
   }
   const lanes = boardLanes(plans, shown);
   const openTask = (t) => ({ role: 'button', tabindex: '0', onclick: () => go({ view: 'run', selTask: t.id }),
@@ -2080,10 +2092,10 @@ function renderRun() {
   if (!tasks.some((t) => t.id === selTask)) selTask = (tasks.find((t) => t.status === 'running') || tasks[0])?.id ?? null;
   put($('tlist'), ...(tasks.length ? tasks.map((t) => h('button', { class: 'nav', 'aria-current': String(t.id === selTask), onclick: () => go({ selTask: t.id }) },
     lamp((STATUS[t.status] || [])[1]), h('span', { class: 'grow ellipsis', text: t.title }), h('span', { class: 'mono muted', text: 'v' + (planFor(t.plan_id)?.version ?? '') })))
-    : [h('p', { class: 'muted', style: 'padding:8px; font-size:13px', text: 'No tasks yet' })]));
+    : [emptyState('Tasks', 'No plan has been approved, so there are no tasks', { label: 'Open plan', icon: 'plan', onclick: () => go({ view: 'plan' }) })]));
   const t = state.tasks.find((x) => x.id === selTask);
   const runEl = $('run');
-  if (!t) return put(runEl, h('div', { class: 'empty' }, h('h2', { text: 'No run selected' }), h('p', { text: 'Runs appear once a plan is approved' })));
+  if (!t) return put(runEl, emptyState('Run', 'No task is selected because no plan has been approved', { label: 'Open plan', icon: 'plan', onclick: () => go({ view: 'plan' }) }));
   const old = runEl.querySelector('.log'), sameTask = runEl.dataset.task === t.id;
   const atEnd = !old || !sameTask || old.scrollHeight - old.scrollTop - old.clientHeight < 40, keep = old?.scrollTop ?? 0;
   const atts = state.attempts.filter((a) => a.task_id === t.id);
@@ -2091,7 +2103,7 @@ function renderRun() {
   const evs = events.filter((e) => e.task_id === t.id);
   const log = h('div', { class: 'log' }, evs.length ? evs.map((e) => h('div', { class: 'ln' + (e.type === 'worker_output' ? ' out' : '') },
     h('span', { class: 'muted', text: hhmmss(new Date(e.ts)) }), h('span', { class: 'ty ellipsis', text: e.type === 'worker_output' ? e.d.kind : e.type.replace(/_/g, ' ') }), h('span', { class: 'tx' }, evText(e), evCopies(e).map((c) => c && copyBtn(c[0], c[1])))))
-    : h('div', { class: 'ln' }, h('span'), h('span'), h('span', { class: 'tx', text: 'No events yet' })));
+    : emptyState('Activity log', 'This task has not produced any events yet; its steps will be listed here as they happen'));
   runEl.dataset.task = t.id;
   put(runEl, 
     h('div', { style: 'display:flex; align-items:center; gap:16px' }, h('h1', { class: 'grow', style: 'overflow-wrap:anywhere', text: t.title }),
@@ -2161,7 +2173,7 @@ function renderShip() {
   if (!d) gh = h('p', { class: c.error ? 'note-bad' : 'muted', text: c.error || 'Checking GitHub' });
   else if (!d.remote) {
     const input = h('input', { type: 'text', class: 'mono', placeholder: 'https://github.com/you/repo.git', 'aria-label': 'GitHub repo URL', spellcheck: 'false' });
-    gh = [h('p', { class: 't2', text: 'No GitHub repo connected. Create an empty repo on github.com, then paste its URL' }),
+    gh = [emptyState('No GitHub repo connected', 'Pushing needs a repo; create an empty one on github.com and paste its URL below'),
       h('div', { style: 'display:flex; gap:8px' }, h('div', { class: 'grow field' }, input),
         h('button', { class: 'btn', onclick: async () => { if (await post(`/api/projects/${p.id}/github`, { url: input.value })) { toast('GitHub repo connected'); loadShip(p.id); } } }, 'Connect'))];
   } else {
@@ -2196,7 +2208,7 @@ function renderShip() {
       h('tbody', {}, merged.map((t) => h('tr', {},
         h('td', {}, h('button', { class: 'btn ghost project-link', onclick: () => go({ view: 'run', selTask: t.id }), text: t.title })), h('td', { class: 'mono t2', text: 'v' + (planFor(t.plan_id)?.version ?? '') }),
         h('td', { class: 'mono t2' }, t.pr_number ? '#' + t.pr_number : '', copyBtn(t.pr_number, 'PR number')), h('td', { class: 'mono' }, short(t.merge_sha), copyBtn(t.merge_sha, 'SHA')), h('td', {}, statusEl(t.status)))))))
-      : h('p', { class: 'muted', text: 'Nothing merged yet' })));
+      : emptyState('Nothing merged yet', 'Each task that merges into your local main will be listed here')));
 }
 
 // ----- Projects -----
@@ -2210,7 +2222,8 @@ function renderProjects() {
         text: p.origin ? 'merges land in ' + p.origin : p.origin_error || '' })),
     h('td', { class: 't2', text: projectStatus(p)[0] || 'Idle' }),
     h('td', { class: 'mono', style: 'white-space:nowrap', text: `${running(p.id)} of ${p.max_workers}` + (p.paused ? ' · paused' : '') })))
-    : [h('tr', {}, h('td', { colspan: '4', class: 'muted', text: 'No projects yet' }))]));
+    : [h('tr', {}, h('td', { colspan: '4' }, emptyState('No projects yet', 'Local has no project folder to work on',
+      { label: 'Add project', onclick: () => $('aPath').focus() })))]));
   const p = proj();
   $('settingsForm').hidden = !p;
   if (p && (settingsFor !== p.id || !$('settingsForm').contains(document.activeElement))) {
@@ -2449,6 +2462,8 @@ function renderPalette() {
     x.keys ? keycaps(x.keys) : h('span'),
     h('span', { class: 'kind mono', text: x.kind }))));
   $('palNone').hidden = palShown.length > 0;
+  if (!palShown.length) put($('palNone'), emptyState('No matches', 'Nothing in projects, views, tasks or actions fits this search',
+    { label: 'Clear search', onclick: () => { $('palIn').value = ''; renderPalette(); $('palIn').focus(); } }));
   $('palCount').textContent = q ? `${palShown.length} ${palShown.length === 1 ? 'result' : 'results'}` : '';
   const again = palShown.findIndex((x) => x.id === keep);
   setPaletteActive(again >= 0 ? again : palShown.findIndex((x) => !x.disabled));
