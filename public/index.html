@@ -272,6 +272,16 @@
     font-size:12px; line-height:16px; display:flex; flex-direction:column; gap:12px; pointer-events:none; opacity:0; transition:opacity var(--t-menu) var(--ease); }
   #tcPop.show { opacity:1; }
   #tcPop[hidden] { display:none; }
+  /* State explainer: small info button plus one shared popover, only one open at a time. */
+  .info-btn { display:inline-flex; align-items:center; justify-content:center; flex:none; width:20px; height:20px; padding:0; border:1px solid transparent; border-radius:8px; background:none; color:var(--muted); cursor:pointer;
+    transition:background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease); }
+  .info-btn:hover, .info-btn[aria-expanded="true"] { background:var(--raised); border-color:var(--line); color:var(--text); }
+  .khl { display:inline-flex; align-items:center; gap:4px; }
+  .info-btn svg { width:14px; height:14px; }
+  #infoPop { position:fixed; left:0; top:0; z-index:30; width:max-content; max-width:280px; padding:12px; border-radius:8px; background:var(--raised); border:1px solid var(--line-2);
+    font-size:13px; line-height:20px; font-weight:400; color:var(--text-2); white-space:normal; text-align:left; opacity:0; transition:opacity var(--t-menu) var(--ease); }
+  #infoPop.show { opacity:1; }
+  #infoPop[hidden] { display:none; }
   #tcPop .pk { color:var(--muted); margin-bottom:4px; }
   #tcPop .pv { display:flex; flex-direction:column; gap:4px; color:var(--text-2); }
   #tcPop .pv .mono { overflow-wrap:anywhere; }
@@ -645,6 +655,7 @@ const ICONS = { // lucide paths (constant strings)
   up: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
   down: '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
   edit: '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
+  info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
   lock: '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
 };
 const icon = (name) => { const s = document.createElementNS(NS, 'svg'); s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('class', 'i'); s.setAttribute('aria-hidden', 'true'); s.innerHTML = ICONS[name]; return s; };
@@ -703,7 +714,52 @@ function disclosure(key, label, count, body, className) {
 const running = (pid) => tasksOf(pid).filter((t) => t.status === 'running').length;
 const short = (s) => (s ? String(s).slice(0, 8) : '');
 const lamp = (kind) => h('span', { class: 'lamp ' + (kind || '') });
-const statusEl = (s) => { const [label, kind] = STATUS[s] || [s, '']; return h('span', { class: 'status' }, lamp(kind), label); };
+// Plain-language copy for the technical states: what is happening, why, and what the owner can do.
+const EXPLAIN = {
+  checks: 'Local is waiting for the automated tests on this change to finish. This is normal and usually takes a few minutes. You do not need to do anything unless it turns into Held.',
+  verifying: 'The tests passed and Local is making sure the change still fits the latest main branch before it merges. It happens on its own and takes a moment. You do not need to do anything.',
+  held: 'This task is paused and will not merge on its own. It usually means a newer plan replaced it or something went wrong. You can merge it anyway or cancel it.',
+  superseded: 'A newer version of the plan replaced this one. Work already running under it is held for you to decide on. You can merge it anyway or cancel it.',
+};
+const INFO_LABEL = { checks: 'Checks', verifying: 'Verifying merge', held: 'Held', superseded: 'Superseded' };
+const infoPop = h('div', { id: 'infoPop', role: 'note', hidden: true });
+let infoOpen = null;
+function closeInfo(refocus) {
+  if (!infoOpen) return;
+  const b = infoOpen; infoOpen = null;
+  b.setAttribute('aria-expanded', 'false');
+  infoPop.classList.remove('show'); infoPop.hidden = true;
+  if (refocus) b.focus();
+}
+function placeInfo(b) {
+  const r = b.getBoundingClientRect(), w = infoPop.offsetWidth, ph = infoPop.offsetHeight;
+  const left = Math.max(8, Math.min(r.left, innerWidth - w - 8));
+  const top = r.bottom + 8 + ph > innerHeight - 8 ? Math.max(8, r.top - ph - 8) : r.bottom + 8;
+  infoPop.style.left = left + 'px'; infoPop.style.top = top + 'px';
+}
+function infoBtn(key) {
+  const name = INFO_LABEL[key];
+  const b = h('button', { class: 'info-btn', type: 'button', 'aria-label': `What does ${name} mean?`, 'aria-expanded': 'false', 'aria-controls': 'infoPop' }, icon('info'));
+  b.addEventListener('click', (e) => {
+    e.stopPropagation(); e.preventDefault();
+    if (infoOpen === b) return closeInfo(false);
+    closeInfo(false);
+    infoPop.textContent = EXPLAIN[key];
+    infoPop.hidden = false; infoOpen = b;
+    b.setAttribute('aria-expanded', 'true');
+    placeInfo(b);
+    requestAnimationFrame(() => infoPop.classList.add('show'));
+  });
+  b.addEventListener('keydown', (e) => e.stopPropagation()); // keep Enter and Space from opening the card behind
+  b.addEventListener('blur', () => { if (infoOpen === b) closeInfo(false); });
+  return b;
+}
+document.body.append(infoPop);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && infoOpen) { e.preventDefault(); e.stopPropagation(); closeInfo(true); } }, true);
+document.addEventListener('pointerdown', (e) => { if (infoOpen && !infoOpen.contains(e.target) && !infoPop.contains(e.target)) closeInfo(false); }, true);
+addEventListener('resize', () => closeInfo(false));
+const INFO_OF = { waiting_ci: 'checks', merging: 'verifying', blocked: 'held' };
+const statusEl = (s) => { const [label, kind] = STATUS[s] || [s, '']; return h('span', { class: 'status' }, lamp(kind), label, INFO_OF[s] ? infoBtn(INFO_OF[s]) : null); };
 const fmtClock = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 const sqlTime = (s) => new Date(String(s).replace(' ', 'T') + (String(s).endsWith('Z') ? '' : 'Z'));
 const hhmm = (d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -1229,7 +1285,7 @@ function planCanvas(p) {
 
   out.push(h('div', { class: 'canvas-head' },
     h('h1', { text: `Plan v${plan.version}` }),
-    h('span', { class: 'status' }, lamp(anyRunning ? 'live' : plan.status === 'approved' ? 'ok' : ''), statusWord),
+    h('span', { class: 'status' }, lamp(anyRunning ? 'live' : plan.status === 'approved' ? 'ok' : ''), statusWord, plan.status === 'superseded' ? infoBtn('superseded') : null),
     h('span', { class: 'grow' }),
     plans.length > 1 ? h('div', { class: 'seg', role: 'group', 'aria-label': 'Plan version' }, plans.slice(0, 8).map((x) =>
       h('button', { 'aria-pressed': String(x.id === plan.id), onclick: () => { selPlan[p.id] = x.id; selNode = null; renderPlan(); }, text: 'v' + x.version }))) : null));
@@ -1683,7 +1739,7 @@ function renderOverview() {
       h('p', { class: 'why', text: p.auto_push_error }), h('div', {}, h('button', { class: 'btn', onclick: pushAll }, icon('ship'), 'Push now'))) : null,
     approval ? h('div', { class: 'attn' }, h('div', { class: 'top' }, lamp('wait'), h('span', { class: 'grow', style: 'font-weight:500', text: `Plan v${approval.version} needs your approval` })),
       h('div', {}, h('button', { class: 'btn', onclick: () => go({ view: 'plan' }) }, 'Review plan'))) : null,
-    ...held.map((t) => h('div', { class: 'attn' }, h('div', { class: 'top' }, lamp('bad'), h('span', { class: 'grow', style: 'font-weight:500; overflow-wrap:anywhere', text: t.title })),
+    ...held.map((t) => h('div', { class: 'attn' }, h('div', { class: 'top' }, lamp('bad'), h('span', { class: 'grow', style: 'font-weight:500; overflow-wrap:anywhere', text: t.title }), infoBtn('held'), t.hold_reason === SUPERSEDED_HOLD ? infoBtn('superseded') : null),
       h('p', { class: 'why', text: holdText(t) }),
       due.includes(t) ? h('div', {}, h('button', { class: 'btn', onclick: () => retry(t) }, icon('retry'), 'Retry')) : null)),
   ].filter(Boolean);
@@ -1799,7 +1855,8 @@ function renderBoard() {
     h('div', { class: 'kanban' },
       COLUMNS.map(([label, states]) => {
         const n = shown.filter((t) => states.includes(t.status)).length;
-        return h('div', { class: 'khead', 'data-col': label }, h('span', { text: label }),
+        const info = { Checks: 'checks', Held: 'held' }[label];
+        return h('div', { class: 'khead', 'data-col': label }, h('span', { class: 'khl' }, label, info ? infoBtn(info) : null),
           h('span', { class: 'mono muted', title: label === 'Running' ? 'Running now / worker limit' : null, text: label === 'Running' ? `${n} / ${p.max_workers}` : String(n) }));
       }),
       lanes.map((lane) => {
@@ -1880,7 +1937,7 @@ function taskCard(t) {
   if (Number.isNaN(since)) since = null;
   const held = heldOf(t);
   return h('div', { class: 'tcard', 'data-task': t.id, 'data-task-id': t.id, role: 'button', tabindex: '0', onclick: () => go({ view: 'run', selTask: t.id }), onkeydown: (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); go({ view: 'run', selTask: t.id }); } } },
-    h('div', { class: 'top' }, lamp(kind), h('span', { class: 'grow', style: 'font-weight:500; overflow-wrap:anywhere', text: t.title })),
+    h('div', { class: 'top' }, lamp(kind), h('span', { class: 'grow', style: 'font-weight:500; overflow-wrap:anywhere', text: t.title }), INFO_OF[t.status] ? infoBtn(INFO_OF[t.status]) : null),
     h('div', { class: 'meta mono' }, h('span', { class: 'ellipsis', text: t.key }),
       attempts.length ? h('span', { text: `attempt ${attempts.length}` }) : null,
       t.repair_count > 0 ? h('span', { text: `${t.repair_count} repair${t.repair_count > 1 ? 's' : ''}` }) : null,
