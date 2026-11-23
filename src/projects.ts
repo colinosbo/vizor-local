@@ -70,9 +70,13 @@ export function addProject(db: DB, repoPath: string, opts: AddProjectOpts = {}):
 }
 
 /** Owner-only project settings. */
-export function configureProject(db: DB, id: string, c: { ciCommand?: string; maxWorkers?: number; forgeOrigin?: string | null; autoPush?: boolean }): Project {
+export function configureProject(db: DB, id: string, c: { ciCommand?: string; maxWorkers?: number; forgeOrigin?: string | null; autoPush?: boolean; autoApprove?: boolean }): Project {
   const p = db.prepare('SELECT * FROM projects WHERE id=?').get(id) as unknown as Project | undefined;
   if (!p) throw new Error(`unknown project ${id}`);
+  if (c.autoApprove !== undefined && typeof c.autoApprove !== 'boolean') throw new Error('autoApprove must be true or false');
+  // Takes effect immediately: RoadmapService re-reads this column on every tick and approves synchronously,
+  // so there is never a queued auto-approval left to survive turning it off.
+  if (c.autoApprove !== undefined) db.prepare('UPDATE projects SET auto_approve=? WHERE id=?').run(c.autoApprove ? 1 : 0, id);
   if (c.ciCommand !== undefined) {
     const ci = c.ciCommand.trim();
     if (!ci || ci.length > 500 || /[\r\n]/.test(ci)) throw new Error('CI command must be one line, 1–500 chars');

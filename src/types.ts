@@ -31,6 +31,8 @@ export interface Project {
   auto_pushed_sha?: string | null; // last main SHA the auto-pusher handled (pushed or failed)
   auto_push_error?: string | null;
   roadmap_paused: number;       // 1 = do not draft the next roadmap phase automatically
+  auto_approve?: number;        // 1 = RoadmapService may approve roadmap plans that pass autoApproveDecision
+  auto_approve_halted?: string | null; // set when a task failed/blocked; nothing auto-approves until the owner resumes
   ci_command: string;           // trusted CI command, run by the shell in a clean clone of the exact SHA
 }
 

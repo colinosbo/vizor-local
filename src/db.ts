@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS projects (
   paused INTEGER NOT NULL DEFAULT 0,
   forge_origin TEXT,
   ci_command TEXT NOT NULL DEFAULT 'node --test',
+  auto_approve INTEGER NOT NULL DEFAULT 0,  -- owner setting; only RoadmapService acts on it
+  auto_approve_halted TEXT,                 -- null = not halted; otherwise why
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -116,6 +118,8 @@ CREATE TABLE IF NOT EXISTS phases (
   status TEXT NOT NULL DEFAULT 'queued',   -- queued|drafting|review|running|done|failed
   plan_id INTEGER,
   error TEXT,
+  approve_mode TEXT NOT NULL DEFAULT 'inherit',  -- inherit|off (validated in code)
+  auto_note TEXT,                                -- why a phase in review needs the owner
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 `;
@@ -125,8 +129,10 @@ export function openDb(path: string): DB {
   db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
   db.exec(SCHEMA);
   ensureColumns(db, 'projects', { forge_origin: 'TEXT', ci_command: "TEXT NOT NULL DEFAULT 'node --test'", roadmap_paused: 'INTEGER NOT NULL DEFAULT 0',
-    auto_push: 'INTEGER NOT NULL DEFAULT 0', auto_pushed_sha: 'TEXT', auto_push_error: 'TEXT' });
+    auto_push: 'INTEGER NOT NULL DEFAULT 0', auto_pushed_sha: 'TEXT', auto_push_error: 'TEXT',
+    auto_approve: 'INTEGER NOT NULL DEFAULT 0', auto_approve_halted: 'TEXT' });
   ensureColumns(db, 'tasks', { usage_retry_at: 'INTEGER', model: 'TEXT', model_why: 'TEXT' });
+  ensureColumns(db, 'phases', { approve_mode: "TEXT NOT NULL DEFAULT 'inherit'", auto_note: 'TEXT' });
   return db;
 }
 

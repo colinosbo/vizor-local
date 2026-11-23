@@ -146,9 +146,14 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
           return json(res, 200, { ok: true });
         }
         if (a === 'projects' && action === 'config') {
+          // autoApprove is strict: only a JSON boolean is accepted ("true", 1 etc. are rejected).
+          if (body.autoApprove !== undefined && typeof body.autoApprove !== 'boolean') return json(res, 400, { error: 'autoApprove must be true or false' });
           return json(res, 200, configureProject(db, id, { ciCommand: body.ciCommand !== undefined ? String(body.ciCommand) : undefined,
-            maxWorkers: body.maxWorkers !== undefined ? Number(body.maxWorkers) : undefined, autoPush: body.autoPush !== undefined ? !!body.autoPush : undefined }));
+            maxWorkers: body.maxWorkers !== undefined ? Number(body.maxWorkers) : undefined, autoPush: body.autoPush !== undefined ? !!body.autoPush : undefined,
+            autoApprove: body.autoApprove }));
         }
+        if (a === 'projects' && action === 'auto-approve-resume') { (opts.roadmap ?? fail('roadmap not enabled')).resumeAutoApprove(id); return json(res, 200, { ok: true }); }
+        if (a === 'phases' && action === 'approve-mode') return json(res, 200, (opts.roadmap ?? fail('roadmap not enabled')).setApproveMode(Number(id), body.mode));
         if (a === 'projects' && action === 'push-now') {
           const p = runner.project(id) ?? fail('unknown project');
           const r = await pushNow(db, p);
