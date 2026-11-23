@@ -222,6 +222,19 @@
   .guard .opt { display:flex; gap:8px; align-items:center; font-size:13px; color:var(--text); cursor:pointer; min-height:24px; }
   .guard .opt input { margin:0; accent-color:var(--accent); }
   .guard .opt input:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+  /* Updates: a quiet row in the sidebar footer and a non-modal panel beside it. No motion of their own. */
+  .upd-panel { position:fixed; left:268px; bottom:16px; z-index:30; width:min(420px, calc(100vw - 292px)); max-height:calc(100vh - 32px); overflow:auto; }
+  .upd-err { bottom:auto; top:16px; }
+  .upd-subjects { max-height:160px; overflow:auto; }
+  .upd-subjects li { display:block; min-height:0; white-space:normal; overflow-wrap:anywhere; }
+  .upd-reason, .upd-progress { font-size:13px; line-height:20px; color:var(--text-2); }
+  .upd-progress { color:var(--text); }
+  .upd-link { display:inline-flex; align-items:center; align-self:flex-start; font-size:13px; line-height:20px; color:var(--text); text-decoration:underline; text-underline-offset:2px; }
+  .upd-confirm { display:flex; flex-direction:column; gap:8px; }
+  .upd-confirm p { margin:0; font-size:13px; line-height:20px; color:var(--text-2); }
+  .upd-row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  #updInd .mono { color:var(--text-2); }
   .guard li .arrow { color:var(--text-2); overflow-wrap:anywhere; white-space:normal; }
 
   .graph { background:var(--deep); border:1px solid var(--line); border-radius:12px; padding:16px; overflow:auto; }
@@ -539,7 +552,8 @@
     .seg button, .rm-mode, .lane-head, .disclosure, .project-link,
     .tcard, .node, .prow, .pal-opt,
     input[type=text], input[type=number], select, textarea, .pal-in input[type=text],
-    .check, .guard .opt, .info-btn, .copy { min-height:40px; }
+    .check, .guard .opt, .info-btn, .copy, .upd-link { min-height:40px; }
+    .upd-panel { left:16px; right:16px; width:auto; }
     .info-btn, .copy { min-width:40px; }
     .rm-gap { min-height:40px; }
     .rm-gap .btn { opacity:1; }
@@ -581,6 +595,7 @@
     <div class="stack" id="viewNav"></div>
   </div>
   <div class="side-foot">
+    <button class="nav" type="button" id="updInd" aria-haspopup="dialog" aria-expanded="false" aria-controls="updPanel" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg><span id="updIndText">Update available</span><span class="mono" id="updIndCount"></span></button>
     <div class="row"><span class="conn" id="conn"></span><span id="connText">Connecting</span></div>
     <div id="globalCap"></div>
   </div>
@@ -710,6 +725,21 @@
           <label class="field"><span>Worker limit across projects</span><input type="number" id="gWorkers" min="1" max="12"></label>
           <div><button class="btn" type="submit">Save limit</button></div>
         </form>
+        <div class="card form" id="updCard" role="group" aria-labelledby="updCardTitle" hidden>
+          <h2 id="updCardTitle">Updates</h2>
+          <label class="check"><input type="checkbox" id="updAuto">Check for updates automatically</label>
+          <small class="muted" style="font-size:12px; line-height:16px; margin-top:-8px">The check contacts GitHub to compare this copy with the latest version</small>
+          <div class="upd-row"><button class="btn" type="button" id="updCheck">Check now</button><span class="t2" id="updResult"></span></div>
+          <p class="upd-reason" id="updCardReason" hidden></p>
+          <a class="upd-link" id="updCardRepo" target="_blank" rel="noopener noreferrer" hidden>Open the Vizor Local repository on GitHub</a>
+          <div id="updRevertBox" hidden>
+            <button class="btn" type="button" id="updRevert" aria-expanded="false" aria-controls="updRevertConfirm">Revert to previous version</button>
+            <div class="upd-confirm" id="updRevertConfirm" role="group" aria-label="Confirm revert" hidden>
+              <p>Go back to the version you had before the last update? Vizor Local backs up its data first, then restarts</p>
+              <div class="acts" style="display:flex; gap:8px; flex-wrap:wrap"><button class="btn danger" type="button" id="updRevertGo">Revert now</button><button class="btn ghost" type="button" id="updRevertCancel">Cancel</button></div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </section>
@@ -717,6 +747,23 @@
 <div id="toast" role="status" aria-live="polite"></div>
 <!-- Screen-reader only: status transitions found by comparing /api/state snapshots. Written by announce(). -->
 <div id="announcer" class="vh" role="status" aria-live="polite" aria-atomic="true"></div>
+<section class="guard upd-panel" id="updPanel" role="dialog" aria-labelledby="updTitle" hidden>
+  <h2 id="updTitle">Update available</h2>
+  <p class="t2" id="updCount"></p>
+  <ul class="upd-subjects" id="updSubjects" tabindex="0" aria-label="Changes in this update"></ul>
+  <p class="upd-reason" id="updReason" hidden></p>
+  <a class="upd-link" id="updRepo" target="_blank" rel="noopener noreferrer" hidden>Open the Vizor Local repository on GitHub</a>
+  <div class="acts" id="updActs">
+    <button class="btn primary" type="button" id="updNow">Update now</button>
+    <button class="btn ghost" type="button" id="updLater">Not now</button>
+  </div>
+  <p class="upd-progress" id="updProgress" hidden></p>
+</section>
+<section class="guard upd-panel upd-err" id="updErr" role="alert" aria-labelledby="updErrTitle" hidden>
+  <h2 id="updErrTitle">Update did not finish</h2>
+  <p class="upd-reason" id="updErrText"></p>
+  <div class="acts"><button class="btn" type="button" id="updErrDismiss">Dismiss</button></div>
+</section>
 <div class="pal-scrim" id="palette" hidden>
   <div class="pal" id="palDialog" role="dialog" aria-label="Command palette">
     <div class="pal-in">
@@ -2920,6 +2967,159 @@ function showPop(card) {
   // Board re-renders replace every card: drop the popover when its card is gone.
   new MutationObserver(() => { if (popCard && !popCard.isConnected) hidePop(); }).observe(board, { childList: true, subtree: true });
 }
+
+// ---------- updates ----------
+// Everything here is text: commit subjects and error text are set with textContent, never as markup.
+// The UI never names an update source. The server fixes it at launch and the requests below carry no URL.
+const UPD_DISMISSED = 'vizor.update.dismissed';
+const UPD_REASON = {
+  'local-changes': 'You have local changes',
+  'ahead-of-upstream': 'This copy is ahead of upstream',
+  'not-a-git-install': 'This copy isn’t a git install',
+  'worker-running': 'A worker is running; wait for it to finish',
+};
+let upd = null, updBusy = false, updErrGone = false;
+const updBehind = () => (upd?.check?.state === 'ok' ? upd.check.behind : 0);
+const updDismissed = () => { try { return localStorage.getItem(UPD_DISMISSED); } catch { return null; } };
+const updWhy = (e) => UPD_REASON[e.reason] || e.message || '';
+function updRepoLink(a) {
+  const url = String(upd?.repositoryUrl || '');
+  a.hidden = !/^https:\/\//.test(url);
+  if (!a.hidden) a.href = url;
+}
+const updPanelOpen = () => !$('updPanel').hidden;
+function openUpd() {
+  $('updPanel').hidden = false; $('updInd').setAttribute('aria-expanded', 'true');
+  [...$('updPanel').querySelectorAll('button, a')].find((n) => !n.hidden && !n.closest('[hidden]'))?.focus();
+}
+function closeUpd(refocus) {
+  $('updPanel').hidden = true; $('updInd').setAttribute('aria-expanded', 'false');
+  if (refocus && !$('updInd').hidden) $('updInd').focus();
+}
+function updProgress(text) {
+  const p = $('updProgress'); p.textContent = text; p.hidden = false;
+  announce(text);
+}
+function renderUpdate() {
+  const on = !!upd;
+  $('updCard').hidden = !on;
+  const behind = updBehind();
+  const showInd = on && behind > 0 && !updBusy && updDismissed() !== upd.check.upstreamSha;
+  $('updInd').hidden = !showInd;
+  $('updIndCount').textContent = showInd ? `· ${behind}` : '';
+  if (!showInd && updPanelOpen() && !updBusy) closeUpd(false);
+  if (!on) { $('updErr').hidden = true; return; }
+
+  // Panel
+  if (behind > 0 && !updBusy) {
+    $('updCount').textContent = `${behind} new commit${behind === 1 ? '' : 's'}`;
+    put($('updSubjects'), (upd.check.subjects || []).map((s) => h('li', { text: String(s) })));
+    const e = upd.eligibility;
+    $('updNow').hidden = !e.eligible;
+    $('updReason').hidden = !!e.eligible;
+    if (!e.eligible) $('updReason').textContent = updWhy(e);
+    updRepoLink($('updRepo')); if (e.reason !== 'not-a-git-install') $('updRepo').hidden = true;
+    $('updActs').hidden = false; $('updProgress').hidden = true;
+  }
+
+  // Settings
+  $('updAuto').checked = !!upd.checkEnabled;
+  $('updCheck').disabled = updBusy || !upd.checkEnabled || !upd.gitInstall;
+  const zip = !upd.gitInstall;
+  $('updCardReason').hidden = !zip;
+  if (zip) $('updCardReason').textContent = UPD_REASON['not-a-git-install'];
+  updRepoLink($('updCardRepo')); if (!zip) $('updCardRepo').hidden = true;
+  const canRevert = !!upd.revert?.available;
+  $('updRevertBox').hidden = !canRevert;
+  if (!canRevert) { $('updRevertConfirm').hidden = true; }
+
+  // A failed or rolled-back run, shown once until dismissed
+  const le = upd.lastError;
+  $('updErr').hidden = !le || updErrGone;
+  if (le) {
+    $('updErrTitle').textContent = le.kind === 'revert' ? 'Revert did not finish' : 'Update did not finish';
+    $('updErrText').textContent = String(le.error);
+  }
+}
+async function fetchUpdate() {
+  if (updBusy) return;
+  try {
+    const r = await fetch('/api/update/status');
+    upd = r.ok ? await r.json() : null;
+  } catch { upd = null; }
+  renderUpdate();
+}
+function updResultText() {
+  const c = upd.check;
+  if (c.state === 'ok') return c.behind > 0 ? `Update available · ${c.behind}` : 'Up to date';
+  if (c.state === 'failed') return `Could not check: ${c.error}`;
+  if (c.state === 'disabled') return c.message;
+  return upd.eligibility.reason === 'not-a-git-install' ? UPD_REASON['not-a-git-install'] : 'Not checked yet';
+}
+function updResult(text) { $('updResult').textContent = text; announce(text); }
+async function checkUpdateNow() {
+  const b = $('updCheck'); b.disabled = true; updResult('Checking…');
+  const r = await post('/api/update/check', null, (m, j) => { if (j?.status) upd = j.status; updResult(m); });
+  if (r) { upd = r; updResult(updResultText()); }
+  renderUpdate();
+}
+async function setUpdateCheck(on) {
+  const r = await post('/api/update/settings', { checkEnabled: on });
+  if (r) { upd = r; updResult(on ? 'Automatic checks on' : 'Automatic checks off'); } else $('updAuto').checked = !on;
+  renderUpdate();
+}
+// After apply the server stops and restarts; poll until it answers again, then reload onto the new version.
+async function runUpdate(path) {
+  if (updBusy) return;
+  updBusy = true;
+  $('updTitle').textContent = path === 'revert' ? 'Reverting' : 'Updating';
+  $('updCount').textContent = ''; $('updSubjects').hidden = true;
+  $('updReason').hidden = true; $('updRepo').hidden = true; $('updActs').hidden = true;
+  $('updInd').hidden = true; $('updCheck').disabled = true; $('updRevertConfirm').hidden = true;
+  if (!updPanelOpen()) { $('updPanel').hidden = false; }
+  updProgress('Backing up…');
+  const r = await post(`/api/update/${path}`, null, (m) => {
+    updBusy = false; $('updSubjects').hidden = false; $('updTitle').textContent = 'Update available';
+    $('updProgress').hidden = true; $('updActs').hidden = false;
+    $('updReason').hidden = false; $('updReason').textContent = m; announce(m);
+    fetchUpdate();
+  });
+  if (!r) return;
+  updProgress('Updating…');
+  const started = Date.now(); let sawDown = false;
+  const tick = async () => {
+    let s = null;
+    try { const res = await fetch('/api/update/status'); if (res.ok) s = await res.json(); } catch { /* server is restarting */ }
+    if (!s) { if (!sawDown) { sawDown = true; updProgress('Restarting…'); } }
+    else if (sawDown || !s.inProgress) return location.reload();
+    if (Date.now() - started > 180000) return updProgress('This is taking longer than expected. Reload this page to check');
+    setTimeout(tick, 1500);
+  };
+  setTimeout(tick, 1500);
+}
+$('updInd').onclick = () => (updPanelOpen() ? closeUpd(true) : openUpd());
+$('updNow').onclick = () => runUpdate('apply');
+$('updLater').onclick = () => {
+  const sha = upd?.check?.upstreamSha;
+  if (sha) { try { localStorage.setItem(UPD_DISMISSED, sha); } catch { /* storage unavailable */ } }
+  closeUpd(false); renderUpdate(); $('goHome').focus();
+};
+$('updErrDismiss').onclick = async () => {
+  updErrGone = true; $('updErr').hidden = true; $('goHome').focus();
+  await post('/api/update/dismiss-error');
+};
+$('updAuto').onchange = (e) => setUpdateCheck(e.target.checked);
+$('updCheck').onclick = checkUpdateNow;
+$('updRevert').onclick = () => {
+  const open = $('updRevertConfirm').hidden;
+  $('updRevertConfirm').hidden = !open; $('updRevert').setAttribute('aria-expanded', String(open));
+  if (open) $('updRevertCancel').focus();
+};
+$('updRevertCancel').onclick = () => { $('updRevertConfirm').hidden = true; $('updRevert').setAttribute('aria-expanded', 'false'); $('updRevert').focus(); };
+$('updRevertGo').onclick = () => runUpdate('revert');
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && updPanelOpen() && !updBusy && !palOpen) { e.preventDefault(); closeUpd(true); } });
+fetchUpdate();
+setInterval(() => { if (!document.hidden) fetchUpdate(); }, 10 * 60 * 1000);
 
 readHash();
 refresh();
