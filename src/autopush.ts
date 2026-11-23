@@ -1,6 +1,6 @@
 import type { DB } from './db.js';
 import { emit } from './events.js';
-import { pushNow } from './ship.js';
+import { PushBlockedError, pushNow } from './ship.js';
 import type { Project } from './types.js';
 
 /**
@@ -24,7 +24,9 @@ export class AutoPusher {
         if (error) emit(this.db, { projectId: p.id, type: 'auto_push_failed', data: { error } });
         this.busy.delete(p.id);
       };
-      pushNow(this.db, p).then(() => done(null), (e: Error) => done(/up to date/.test(e.message) ? null : e.message));
+      // A guard refusal is always recorded, even if a blocked file name happens to contain "up to date".
+      pushNow(this.db, p).then(() => done(null), (e: Error) =>
+        done(e instanceof PushBlockedError ? e.message : /up to date/.test(e.message) ? null : e.message));
     }
   }
 }

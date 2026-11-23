@@ -123,6 +123,16 @@ CREATE TABLE IF NOT EXISTS phases (
   done_note TEXT,                                -- why a done phase finished without merged work (NULL = normal finish)
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Push guard findings the owner explicitly allowed, one finding at a time. Never stores the secret.
+CREATE TABLE IF NOT EXISTS push_overrides (
+  project_id TEXT NOT NULL,
+  finding_id TEXT NOT NULL,
+  file TEXT NOT NULL,
+  rule TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, finding_id)
+);
 `;
 
 export function openDb(path: string): DB {

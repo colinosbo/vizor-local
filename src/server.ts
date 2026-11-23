@@ -12,7 +12,7 @@ import type { PlanningService } from './planning.js';
 import { addProject, configureProject } from './projects.js';
 import type { RoadmapService } from './roadmap.js';
 import { EMPTY_SETUP, projectSetup } from './setup.js';
-import { pushNow, pushToGithub, setGithubRemote, shipStatus } from './ship.js';
+import { clearOverride, overrideFinding, PushBlockedError, pushNow, pushToGithub, setGithubRemote, shipStatus } from './ship.js';
 import { folderStatus, syncCheckout } from './sync.js';
 import type { Runner } from './runner.js';
 
@@ -126,7 +126,7 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
       }
       if (req.method === 'GET' && parts[0] === 'api' && parts[1] === 'projects' && parts[3] === 'ship') {
         const p = runner.project(parts[2]) ?? fail(`unknown project ${parts[2]}`);
-        const ship = await shipStatus(p, { fetch: url.searchParams.get('fetch') !== '0' });
+        const ship = await shipStatus(p, { fetch: url.searchParams.get('fetch') !== '0', db });
         let folder = null; try { folder = folderStatus(p); } catch { /* folder missing */ }
         return json(res, 200, { ...ship, folder });
       }
@@ -167,6 +167,8 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
           return json(res, 200, r);
         }
         if (a === 'projects' && action === 'push') return json(res, 200, await pushToGithub(db, runner.project(id) ?? fail('unknown project'), String(body.sha ?? '')));
+        if (a === 'projects' && action === 'push-override') return json(res, 200, await overrideFinding(db, runner.project(id) ?? fail('unknown project'), String(body.findingId ?? '')));
+        if (a === 'projects' && action === 'push-override-clear') return json(res, 200, clearOverride(db, runner.project(id) ?? fail('unknown project'), String(body.findingId ?? '')));
         if (a === 'projects' && action === 'github') { await setGithubRemote(db, runner.project(id) ?? fail('unknown project'), String(body.url ?? '')); return json(res, 200, { ok: true }); }
         if (a === 'projects' && action === 'sync') return json(res, 200, syncCheckout(db, runner.project(id) ?? fail('unknown project')));
         if (a === 'projects' && action === 'roadmap') return json(res, 200, (opts.roadmap ?? fail('roadmap not enabled')).add(id, String(body.text ?? '')));
@@ -212,7 +214,11 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
         }
       }
       json(res, 404, { error: 'not found' });
-    } catch (e) { json(res, 400, { error: String((e as Error).message ?? e) }); }
+    } catch (e) {
+      // push and push-now: the guard refused; the UI shows each finding with its override button.
+      if (e instanceof PushBlockedError) return json(res, 409, { error: e.message, findings: e.findings });
+      json(res, 400, { error: String((e as Error).message ?? e) });
+    }
   });
   port = await listen(server, opts.port ?? 4317);
   const close = () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); });
