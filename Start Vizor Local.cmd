@@ -5,9 +5,11 @@ title Vizor Local
 where node >nul 2>nul || (echo Node.js was not found on PATH. Install Node 22.13 or newer. & pause & exit /b 1)
 where git >nul 2>nul || (echo Git was not found on PATH. & pause & exit /b 1)
 where claude >nul 2>nul || echo Warning: claude was not found on PATH; planning and workers will fail until it is.
+rem npm ci installs exactly what package-lock.json lists and never rewrites it, so the folder stays
+rem clean for one-click updates. It replaced: call npm install || goto fail
 if not exist node_modules (
   echo Installing dependencies...
-  call npm install || goto fail
+  call npm ci || goto fail
 )
 echo Building...
 call npm run build || goto fail

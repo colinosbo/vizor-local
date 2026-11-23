@@ -27,7 +27,7 @@ Double-click again later and it reopens the one that is running. A desktop short
 ## Run it by hand
 
 ```
-npm install
+npm ci
 npm run build
 node --disable-warning=ExperimentalWarning dist/src/cli.js serve --orchestrator claude --worker claude --open
 ```
@@ -47,6 +47,19 @@ node --disable-warning=ExperimentalWarning dist/src/cli.js serve --orchestrator 
 ## Where your data goes
 
 Everything lives in `~/.local-poc` on your machine. Vizor pushes to GitHub only when you click Push or turn on auto-push for a project, using your own git sign-in. It stores no credentials.
+
+## Updates
+
+Vizor Local checks GitHub for a newer version of itself. This is the only time it contacts the internet on its own.
+
+- **What it contacts:** `https://github.com/colinosbo/vizor-local`, when Vizor starts, every 6 hours while it runs, and when you click Check for updates.
+- **What it fetches:** the `main` branch of that repository, with plain `git fetch`. It stores it under a private ref (`refs/vizor/upstream`) in the install folder. It adds no git remote, changes no git settings, and sends no account details, extra headers or query strings. Your own git sign-in is not used for this.
+- **What it does with it:** it counts how many commits you are behind and shows their titles. Nothing is installed until you click Update.
+- **Turn it off:** in the dashboard's update settings, or send `POST /api/update/settings` with `{"checkEnabled": false}`. This stops both the automatic and the manual check. It is stored as `update_check_enabled` in the local database.
+
+Clicking Update only works for a git clone with no local changes, that is strictly behind GitHub, while no worker is running. Vizor copies its database to `~/.local-poc/backups/` (the last 3 are kept), closes, fast-forwards the folder, runs `npm ci` and the build, and starts again. If any step fails it goes back to the version you had, rebuilds it, starts it and shows you the error. After an update you can go back to the previous version once. A copy installed from a zip cannot update itself; download the new version from the repository instead.
+
+The update source can only be changed when Vizor starts, with `serve --update-upstream <url>` or the `VIZOR_UPDATE_UPSTREAM` environment variable. Nothing in the dashboard or its API can change it.
 
 ## More
 

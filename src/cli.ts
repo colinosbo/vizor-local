@@ -17,6 +17,7 @@ import type { Project } from './types.js';
 import { Runner } from './runner.js';
 import { createTargetRepo, DEMO_PLAN, DEMO_SCENARIO } from './sandbox.js';
 import { startServer } from './server.js';
+import { resolveUpstream, runUpdater, systemRunner, UpdateService, workersBusy } from './update.js';
 import { ClaudeCodeWorkerFactory, FakeWorkerFactory } from './workers.js';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -130,8 +131,17 @@ async function serve() {
   setInterval(() => { try { roadmap.tick(); } catch (e) { console.error('roadmap:', (e as Error).message); } }, 2000);
   const autoPush = new AutoPusher(db);
   setInterval(() => { try { autoPush.tick(); } catch (e) { console.error('auto-push:', (e as Error).message); } }, 15000);
-  const s = await startServer(db, runner, planning, { port: Number(flag('port', '4317')), originsDir: join(dir, 'origins'), roadmap });
+  const workerRunning = () => workersBusy(db, runner);
+  let s: Awaited<ReturnType<typeof startServer>> | undefined;
+  const update = new UpdateService({ db, dataDir: dir, dbPath: join(dir, 'local.db'), upstream: resolveUpstream(flag('update-upstream')), workerRunning,
+    exit: () => {
+      console.log('Updating Vizor Local: this window closes and the updated version starts in a new one.');
+      runner.stop();
+      void (s?.close() ?? Promise.resolve()).finally(() => { db.close(); process.exit(0); });
+    } });
+  s = await startServer(db, runner, planning, { port: Number(flag('port', '4317')), originsDir: join(dir, 'origins'), roadmap, update });
   claimInstance(dir, s.url);
+  update.start();
   const projects = db.prepare('SELECT * FROM projects ORDER BY created_at').all() as unknown as Project[];
   console.log(`Vizor Local (worker: ${workers.name}, planner: ${flag('orchestrator', 'canned')})`);
   for (const p of projects) console.log('  ' + describe(p).replace(/\n/g, '\n  '));
@@ -143,6 +153,14 @@ async function main() {
   const cmd = args[0];
   if (cmd === 'demo') return demo();
   if (cmd === 'serve') return serve();
+  if (cmd === 'run-updater') {
+    // Started detached by the server. SHAs come only from the journal in --data, never from arguments.
+    const root = flag('root');
+    if (!root) throw new Error('usage: run-updater --data <dir> --root <installRoot>');
+    const j = await runUpdater({ dataDir: dataDir(), root: resolve(root), run: systemRunner });
+    console.log(`[${new Date().toISOString()}] updater finished: ${j ? `${j.kind} ${j.status}${j.error ? ' — ' + j.error : ''}` : 'no pending update'}`);
+    return;
+  }
   if (cmd === 'add') {
     if (!args[1] || args[1].startsWith('--')) throw new Error('usage: add <checkout> [--name N] [--workers N] [--ci "cmd"] [--base main] [--create-origin]');
     const p = addProject(appDb(), args[1], { maxWorkers: Number(flag('workers', '1')), ciCommand: flag('ci'), name: flag('name'),
@@ -166,7 +184,8 @@ async function main() {
   }
   console.log(`vizor-local (PoC)
   demo [--serve] [--port N]       scripted end-to-end run against a disposable repo
-  serve [--worker fake|claude] [--orchestrator canned|claude] [--port N] [--open]
+  serve [--worker fake|claude] [--orchestrator canned|claude] [--port N] [--open] [--update-upstream <url>]
+                                  --update-upstream (or VIZOR_UPDATE_UPSTREAM) changes where updates come from
   add <checkout> [--name N] [--workers N] [--ci "cmd"] [--base main] [--create-origin]
                                   bind a checkout; --create-origin makes a local forge origin (and git init if needed)
   config <project> [--ci "cmd"] [--workers N] [--forge-origin <bare>]

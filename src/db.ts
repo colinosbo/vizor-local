@@ -6,6 +6,8 @@ export type DB = DatabaseSync;
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 INSERT OR IGNORE INTO settings(key, value) VALUES ('global_max_workers', '4');
+-- '1' = check GitHub for a newer Vizor Local at startup, every 6 hours and on request; '0' = never.
+INSERT OR IGNORE INTO settings(key, value) VALUES ('update_check_enabled', '1');
 
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,

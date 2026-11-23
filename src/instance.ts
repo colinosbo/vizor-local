@@ -11,6 +11,19 @@ export function readRunning(dataDir: string): { pid: number; url: string } | nul
   } catch { return null; }
 }
 
+/**
+ * Whether the single-instance lock is held: server.json exists and the pid it records is alive.
+ * Unlike readRunning, this also counts the calling process, so a detached updater can wait for the
+ * server that spawned it to exit. A missing or unreadable file, or a dead pid, means the lock is clear.
+ */
+export function instanceLockHeld(dataDir: string): boolean {
+  try {
+    const j: unknown = JSON.parse(readFileSync(join(dataDir, 'server.json'), 'utf8'));
+    const pid = typeof j === 'object' && j !== null && 'pid' in j ? j.pid : null;
+    return typeof pid === 'number' && isAlive(pid);
+  } catch { return false; }
+}
+
 export function claimInstance(dataDir: string, url: string) {
   const file = join(dataDir, 'server.json');
   writeFileSync(file, JSON.stringify({ pid: process.pid, url }), { mode: 0o600 });

@@ -15,6 +15,7 @@ import { EMPTY_SETUP, projectSetup } from './setup.js';
 import { clearOverride, overrideFinding, PushBlockedError, pushNow, pushToGithub, setGithubRemote, shipStatus } from './ship.js';
 import { folderStatus, syncCheckout } from './sync.js';
 import type { Runner } from './runner.js';
+import type { UpdateService } from './update.js';
 
 const page = fileURLToPath(new URL('../../public/index.html', import.meta.url));
 
@@ -23,7 +24,12 @@ export interface ServerOpts {
   token?: string;           // per-launch secret; random if omitted
   originsDir?: string;      // where `add project` may create local forge origins
   roadmap?: RoadmapService;
+  update?: UpdateService;   // self-update for Vizor Local; routes answer 404 without it
 }
+
+/** The update source is fixed at launch. Any body that tries to name one is refused outright. */
+const mentionsUpstream = (body: unknown) =>
+  typeof body === 'object' && body !== null && Object.keys(body).some((k) => /upstream/i.test(k));
 export interface RunningServer { server: Server; port: number; url: string; token: string; close(): Promise<void> }
 
 /** Try `port`, then the next 20, then any free port. Avoids EADDRINUSE when another app holds 4317. */
@@ -130,9 +136,37 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
         let folder = null; try { folder = folderStatus(p); } catch { /* folder missing */ }
         return json(res, 200, { ...ship, folder });
       }
+      if (req.method === 'GET' && url.pathname === '/api/update/status') {
+        if (!opts.update) return json(res, 404, { error: 'not found' });
+        return json(res, 200, await opts.update.status());
+      }
       if (req.method === 'POST' && parts[0] === 'api') {
         const body = await readBody(req);
         const [, a, id, action] = parts;
+        if ((a === 'settings' || a === 'update') && mentionsUpstream(body)) {
+          return json(res, 400, { error: 'The update source can only be set when Vizor Local starts (--update-upstream or VIZOR_UPDATE_UPSTREAM).' });
+        }
+        if (a === 'update') {
+          const u = opts.update;
+          if (!u || action !== undefined) return json(res, 404, { error: 'not found' });
+          if (id === 'check') {
+            if (!u.checkEnabled()) return json(res, 409, { error: 'The update check is turned off.', reason: 'check-disabled', status: await u.status() });
+            await u.check();
+            return json(res, 200, await u.status());
+          }
+          if (id === 'apply' || id === 'revert') {
+            // Nothing from the body is used: the target SHA comes from the server's own fetch or the updater's record.
+            const r = await u.apply(id === 'apply' ? 'update' : 'revert');
+            return r.ok ? json(res, 202, r) : json(res, r.status, { error: r.message, reason: r.reason });
+          }
+          if (id === 'dismiss-error') { u.dismissError(); return json(res, 200, { ok: true }); }
+          if (id === 'settings') {
+            if (typeof body.checkEnabled !== 'boolean') return json(res, 400, { error: 'checkEnabled must be true or false' });
+            u.setCheckEnabled(body.checkEnabled);
+            return json(res, 200, await u.status());
+          }
+          return json(res, 404, { error: 'not found' });
+        }
         if (a === 'projects' && !id) {
           const p = addProject(db, String(body.path ?? ''), { maxWorkers: Number(body.maxWorkers ?? 1), ciCommand: body.ciCommand ? String(body.ciCommand) : undefined,
             name: body.name ? String(body.name) : undefined, createOrigin: !!body.createOrigin, createFolder: !!body.createFolder, originsDir: opts.originsDir });
