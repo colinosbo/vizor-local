@@ -7,6 +7,7 @@ import { emit } from './events.js';
 import { HeadMovedError, type Forge, type ForgeProvider } from './forge.js';
 import { allPaths, commitAll, ensureWorktree, hasUncommitted, push, revParse, taskChanges, updateFromBase } from './git.js';
 import { evaluateMerge } from './merge.js';
+import { SUPERSEDED_HOLD } from './plan.js';
 import { inScope, scopesOverlap } from './scope.js';
 import { DEFAULT_CI, IN_FLIGHT, REQUIRED_CHECK, TRUSTED_WORKFLOW, taskMarker, type AttemptRow, type Check, type Project, type TaskRow } from './types.js';
 import { modelFor, type WorkerFactory, type WorkerHandle } from './workers.js';
@@ -214,10 +215,7 @@ export class Runner {
     const d = evaluateMerge(this.db, forge, t, p);
     if (d.eligible) {
       try {
-        const sha = forge.merge(t.pr_number!, d.headSha!);
-        this.setTask(t.id, { status: 'merging', merge_sha: sha });
-        const check = forge.triggerCi(sha); // verify the merged commit before releasing dependents
-        this.ev(t, 'pr_merged', { pr: t.pr_number, head: d.headSha, mergeSha: sha, postMergeCheck: check });
+        this.squashMerge(t, forge, d.headSha!);
       } catch (e) {
         this.ev(t, 'merge_retry', { error: String(e), headMoved: e instanceof HeadMovedError });
       }
@@ -227,6 +225,19 @@ export class Runner {
     if (codes.includes('check_pending') || codes.includes('no_check') || codes.includes('check_failed')) return;
     if (codes.length === 1 && codes[0] === 'stale') return this.controlledUpdate(t);
     this.block(t, 'merge held: ' + d.holds.map((h) => `${h.code} (${h.detail})`).join('; '));
+  }
+
+  /**
+   * The one squash-merge path. The forge merges only if the PR head still equals `headSha`
+   * (HeadMovedError otherwise), so a head that moved after evaluation fails closed with no state change.
+   * On success the task enters 'merging' and the post-merge check decides 'merged'.
+   */
+  private squashMerge(t: TaskRow, forge: Forge, headSha: string): string {
+    const sha = forge.merge(t.pr_number!, headSha);
+    this.setTask(t.id, { status: 'merging', merge_sha: sha, hold_reason: null });
+    const check = forge.triggerCi(sha); // verify the merged commit before releasing dependents
+    this.ev(t, 'pr_merged', { pr: t.pr_number, head: headSha, mergeSha: sha, postMergeCheck: check });
+    return sha;
   }
 
   private controlledUpdate(t: TaskRow) {
@@ -505,6 +516,32 @@ export class Runner {
     }
     this.setTask(t.id, { status: t.pr_number && t.pending_repair === null && t.hold_reason?.startsWith('merge held') ? 'waiting_ci' : 'ready', hold_reason: null, usage_retry_at: null, local_retry_count: 0 });
     this.ev(t, 'task_retry_requested');
+  }
+
+  /**
+   * Owner-only "Merge anyway" for a task held because its plan was superseded while it was in flight.
+   * Only the plan-approval check is relaxed; every other merge check must pass. A stale branch is refused
+   * (no controlled base update here). Refusals throw and change nothing.
+   */
+  mergeAnyway(taskId: string): { mergeSha: string } {
+    const t = this.task(taskId);
+    if (!t) throw new Error(`unknown task ${taskId}`);
+    if (t.status !== 'blocked' || t.hold_reason !== SUPERSEDED_HOLD) {
+      throw new Error(`Merge anyway only applies to a task held with "${SUPERSEDED_HOLD}"; task is ${t.status}${t.hold_reason ? ` (${t.hold_reason})` : ''}`);
+    }
+    const forge = this.f(t.project_id);
+    const d = evaluateMerge(this.db, forge, t, this.project(t.project_id), { ownerOverride: true });
+    if (!d.eligible) {
+      throw new Error('Merge anyway refused: ' + d.holds.map((h) => `${h.code} (${h.detail})`).join('; '));
+    }
+    this.ev(t, 'owner_override_merge', { taskId: t.id, planId: t.plan_id, headSha: d.headSha, prNumber: t.pr_number });
+    try {
+      return { mergeSha: this.squashMerge(t, forge, d.headSha!) };
+    } catch (e) {
+      // The head moved (or the forge refused) between evaluation and merge: fail closed, task stays held.
+      this.ev(t, 'owner_override_merge_failed', { error: String((e as Error).message ?? e).slice(0, 300), headMoved: e instanceof HeadMovedError });
+      throw new Error(`Merge anyway failed; nothing was merged: ${String((e as Error).message ?? e)}`);
+    }
   }
 }
 

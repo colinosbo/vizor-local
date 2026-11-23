@@ -173,6 +173,11 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
         if (a === 'settings' && id === 'global') { setSetting(db, 'global_max_workers', String(Math.max(1, Math.min(12, Number(body.globalMaxWorkers) || 1)))); return json(res, 200, { ok: true }); }
         if (a === 'attempts' && action === 'cancel') { runner.cancel(id); return json(res, 200, { ok: true }); }
         if (a === 'tasks' && action === 'retry') { runner.retry(id); return json(res, 200, { ok: true }); }
+        if (a === 'tasks' && action === 'merge-anyway') {
+          // Owner-only route: merges a task held by plan supersession if every other merge check passes.
+          try { return json(res, 200, { ok: true, ...runner.mergeAnyway(id) }); }
+          catch (e) { return json(res, 400, { error: String((e as Error).message ?? e) }); }
+        }
       }
       json(res, 404, { error: 'not found' });
     } catch (e) { json(res, 400, { error: String((e as Error).message ?? e) }); }

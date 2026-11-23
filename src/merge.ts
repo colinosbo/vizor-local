@@ -1,6 +1,7 @@
 import type { DB } from './db.js';
 import type { Forge } from './forge.js';
 import { allPaths } from './git.js';
+import { SUPERSEDED_HOLD } from './plan.js';
 import { inScope } from './scope.js';
 import { REQUIRED_CHECK, TRUSTED_WORKFLOW, taskMarker, type Project, type TaskRow } from './types.js';
 
@@ -11,16 +12,26 @@ export type HoldCode =
 
 export interface MergeDecision { eligible: boolean; holds: { code: HoldCode; detail: string }[]; headSha?: string }
 
+export interface MergeOptions {
+  /**
+   * Owner-only "Merge anyway". Relaxes plan_not_approved for exactly one case: the plan was superseded
+   * while this task was in flight and the task is held for an owner decision. Every other check is unchanged.
+   */
+  ownerOverride?: boolean;
+}
+
 /**
  * Merge authority. Pure function of durable state + forge facts. Fails closed on any missing data.
  * A worker's claim of success is never an input here.
  */
-export function evaluateMerge(db: DB, forge: Forge, task: TaskRow, project: Project): MergeDecision {
+export function evaluateMerge(db: DB, forge: Forge, task: TaskRow, project: Project, opts: MergeOptions = {}): MergeDecision {
   const holds: MergeDecision['holds'] = [];
   const hold = (code: HoldCode, detail: string): MergeDecision => { holds.push({ code, detail }); return { eligible: false, holds }; };
 
   const plan = db.prepare('SELECT status FROM plans WHERE id=?').get(task.plan_id) as { status: string } | undefined;
-  if (plan?.status !== 'approved') return hold('plan_not_approved', `plan ${task.plan_id} is ${plan?.status ?? 'missing'}`);
+  const overridden = opts.ownerOverride === true && plan?.status === 'superseded'
+    && task.status === 'blocked' && task.hold_reason === SUPERSEDED_HOLD;
+  if (plan?.status !== 'approved' && !overridden) return hold('plan_not_approved', `plan ${task.plan_id} is ${plan?.status ?? 'missing'}`);
   if (!task.pr_number || !task.head_sha) return hold('no_pr', 'task has no PR/expected head');
 
   const pr = forge.getPr(task.pr_number);
