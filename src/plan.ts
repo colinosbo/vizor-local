@@ -59,12 +59,31 @@ export function draftPlan(db: DB, projectId: string, body: PlanBody): { planId: 
   });
 }
 
+export interface InFlightTask { id: string; key: string; title: string; status: string; pr_number: number | null }
+
+/** Thrown by approvePlan when the currently approved plan still has in-flight work and force was not given. */
+export class PlanInFlightError extends Error {
+  constructor(readonly version: number, readonly tasks: InFlightTask[]) {
+    super(`approved plan v${version} still has in-flight tasks: ` +
+      tasks.map((t) => `${t.key} (${t.status}${t.pr_number != null ? `, PR #${t.pr_number}` : ''})`).join(', '));
+    this.name = 'PlanInFlightError';
+  }
+}
+
+export const SUPERSEDED_HOLD = 'plan superseded while in flight; owner decision needed';
+
+/** In flight: running, waiting on CI or merging — or holding an open PR (any non-terminal status with a pr_number). */
+const IN_FLIGHT_SQL = `(status IN ('running','waiting_ci','merging') OR (pr_number IS NOT NULL AND status NOT IN ('merged','cancelled')))`;
+
 /**
- * Owner-only. The orchestrator has no code path to this function.
- * Approving a new version supersedes the previous one; unstarted tasks are cancelled,
- * in-flight tasks are held for an owner decision (fail closed).
+ * Owner-only. The orchestrator has no code path to this function, and `force` is only reachable from
+ * the owner's authenticated HTTP route (POST /api/plans/:id/approve with `{"force": true}`); the CLI never passes it.
+ *
+ * Approving a new version supersedes the previous one. If the approved plan still has in-flight work
+ * (running/waiting_ci/merging, or an open PR) approval is refused with PlanInFlightError and nothing changes.
+ * With `force: true`, unstarted tasks are cancelled and every in-flight task is held for an owner decision (fail closed).
  */
-export function approvePlan(db: DB, planId: number): void {
+export function approvePlan(db: DB, planId: number, opts: { force?: boolean } = {}): void {
   tx(db, () => {
     const plan = db.prepare('SELECT * FROM plans WHERE id=?').get(planId) as { id: number; project_id: string; version: number; status: string; body: string } | undefined;
     if (!plan) throw new Error('plan not found');
@@ -73,11 +92,19 @@ export function approvePlan(db: DB, planId: number): void {
     const { errors } = validatePlan(body);
     if (errors.length) throw new Error('plan invalid: ' + errors.join('; '));
 
-    const old = db.prepare("SELECT id FROM plans WHERE project_id=? AND status='approved'").all(plan.project_id) as { id: number }[];
+    const old = db.prepare("SELECT id, version FROM plans WHERE project_id=? AND status='approved' ORDER BY version").all(plan.project_id) as { id: number; version: number }[];
+    const inFlightQ = db.prepare(`SELECT id, key, title, status, pr_number FROM tasks WHERE plan_id=? AND ${IN_FLIGHT_SQL} ORDER BY id`);
+    const inFlight = old.flatMap((o) => (inFlightQ.all(o.id) as unknown as InFlightTask[]).map((t) => ({ ...t, version: o.version })));
+    const forced = opts.force === true; // strict: only a real boolean true forces
+    if (inFlight.length > 0 && !forced) {
+      throw new PlanInFlightError(inFlight[0].version, inFlight.map(({ version: _v, ...t }) => t));
+    }
+
     for (const o of old) {
       db.prepare("UPDATE plans SET status='superseded' WHERE id=?").run(o.id);
-      db.prepare("UPDATE tasks SET status='cancelled', hold_reason='superseded by plan v'||?, updated_at=datetime('now') WHERE plan_id=? AND status IN ('pending','ready')").run(plan.version, o.id);
-      db.prepare("UPDATE tasks SET status='blocked', hold_reason='plan superseded while in flight; owner decision needed', updated_at=datetime('now') WHERE plan_id=? AND status IN ('running','waiting_ci')").run(o.id);
+      // Hold first so a pending/ready task with an open PR is held, not cancelled.
+      db.prepare(`UPDATE tasks SET status='blocked', hold_reason=?, updated_at=datetime('now') WHERE plan_id=? AND ${IN_FLIGHT_SQL}`).run(SUPERSEDED_HOLD, o.id);
+      db.prepare("UPDATE tasks SET status='cancelled', hold_reason=?, updated_at=datetime('now') WHERE plan_id=? AND status IN ('pending','ready')").run(`superseded by plan v${plan.version}`, o.id);
     }
     db.prepare("UPDATE plans SET status='approved', approved_at=datetime('now') WHERE id=?").run(planId);
     const ins = db.prepare(`INSERT INTO tasks(id, project_id, plan_id, key, title, prompt, acceptance, write_scope, deps, status, branch, model, model_why)
@@ -86,6 +113,9 @@ export function approvePlan(db: DB, planId: number): void {
       const id = `${plan.project_id}-v${plan.version}-${t.key}`;
       ins.run(id, plan.project_id, planId, t.key, t.title, t.prompt, t.acceptance, JSON.stringify(t.writeScope), JSON.stringify(t.deps), `local/${id}`, t.model ?? null, t.modelWhy ? String(t.modelWhy).slice(0, 200) : null);
     }
-    emit(db, { projectId: plan.project_id, type: 'plan_approved', data: { planId, version: plan.version, tasks: body.tasks.map((t) => t.key) } });
+    emit(db, { projectId: plan.project_id, type: 'plan_approved', data: {
+      planId, version: plan.version, tasks: body.tasks.map((t) => t.key),
+      ...(forced ? { forced: true, heldTasks: inFlight.map((t) => t.id) } : {}),
+    } });
   });
 }

@@ -6,7 +6,7 @@ import type { DB } from './db.js';
 import { setSetting } from './db.js';
 import { emit, eventsAfter, subscribe, type EventRow } from './events.js';
 import { resolveLocalOrigin } from './forges.js';
-import { approvePlan } from './plan.js';
+import { approvePlan, PlanInFlightError } from './plan.js';
 import type { PlanningService } from './planning.js';
 import { addProject, configureProject } from './projects.js';
 import type { RoadmapService } from './roadmap.js';
@@ -162,7 +162,12 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
         if (a === 'projects' && action === 'roadmap-pause') { (opts.roadmap ?? fail('roadmap not enabled')).pause(id, !!body.paused); return json(res, 200, { ok: true }); }
         if (a === 'phases' && action === 'retry') { (opts.roadmap ?? fail('roadmap not enabled')).retry(Number(id)); return json(res, 200, { ok: true }); }
         if (a === 'phases' && action === 'remove') { (opts.roadmap ?? fail('roadmap not enabled')).remove(Number(id)); return json(res, 200, { ok: true }); }
-        if (a === 'plans' && action === 'approve') { approvePlan(db, Number(id)); return json(res, 200, { ok: true }); }
+        if (a === 'plans' && action === 'approve') {
+          // Owner-only route. Only a strict JSON boolean `true` forces; "true", 1, etc. do not.
+          try { approvePlan(db, Number(id), body?.force === true ? { force: true } : {}); }
+          catch (e) { if (e instanceof PlanInFlightError) return json(res, 409, { error: e.message, inFlight: e.tasks }); throw e; }
+          return json(res, 200, { ok: true });
+        }
         if (a === 'projects' && action === 'pause') { runner.pause(id, !!body.paused); return json(res, 200, { ok: true }); }
         if (a === 'projects' && action === 'workers') { configureProject(db, id, { maxWorkers: Number(body.maxWorkers) }); return json(res, 200, { ok: true }); }
         if (a === 'settings' && id === 'global') { setSetting(db, 'global_max_workers', String(Math.max(1, Math.min(12, Number(body.globalMaxWorkers) || 1)))); return json(res, 200, { ok: true }); }
