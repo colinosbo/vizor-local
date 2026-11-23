@@ -190,6 +190,18 @@
   .ship-commits { display:flex; flex-direction:column; border:1px solid var(--line); border-radius:8px; background:var(--deep); padding:4px 0; }
   .ship-commits .c { display:grid; grid-template-columns:104px minmax(0,1fr); align-items:center; gap:12px; height:32px; padding:0 16px; font-size:13px; }
   .note-bad { color:var(--neg-text); overflow-wrap:anywhere; }
+  /* Push guard: findings that block a push. One row per finding, each with its own override. */
+  .pg { display:flex; flex-direction:column; gap:12px; border:1px solid var(--line-2); border-radius:8px; background:var(--deep); padding:16px; }
+  .pg h3 { font-size:15px; font-weight:500; }
+  .pg p { font-size:13px; line-height:20px; color:var(--text-2); overflow-wrap:anywhere; }
+  .pg-rows { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }
+  .pg-row { display:flex; flex-direction:column; gap:8px; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--card); }
+  .pg-file { font-size:13px; line-height:20px; color:var(--text); overflow-wrap:anywhere; }
+  .pg-reason { font-size:13px; line-height:20px; color:var(--text-2); overflow-wrap:anywhere; }
+  .pg-excerpt { font-size:12px; line-height:16px; color:var(--text-2); background:var(--deep); border:1px solid var(--line); border-radius:4px; padding:4px 8px; overflow-wrap:anywhere; white-space:pre-wrap; }
+  .pg-acts { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .pg-ask { font-size:13px; line-height:20px; color:var(--text); overflow-wrap:anywhere; }
+  .pg .btn:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
   .canvas > *, .run > *, .narrow > * { flex:none; }
   .canvas-head { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
   .summary { font-size:15px; line-height:22px; max-width:760px; }
@@ -2353,6 +2365,49 @@ function renderRun() {
 const shipCache = {}; let shipConfirm = null;
 // Push to GitHub never pushes directly: it shows the confirm step in Ship.
 function askPush(pid) { shipConfirm = pid; renderShip(); }
+// Push guard: one finding at a time can be allowed, after its own confirm step. There is no allow-all.
+let pgConfirm = null, pgSeen = '';
+const pgWhere = (f) => f.file ? `${f.file}${f.line ? ':' + f.line : ''}` : 'this change';
+function askOverride(pid, findingId) { pgConfirm = { pid, findingId }; renderShip(); }
+async function overrideOne(pid, findingId) {
+  pgConfirm = null;
+  const r = await post(`/api/projects/${encodeURIComponent(pid)}/push-override`, { findingId });
+  if (r) toast('Allowed that one finding');
+  loadShip(pid);
+}
+// A 409 from push or push-now carries the findings: show them in Ship instead of a generic error.
+function pushBlocked(pid, j) {
+  const d = shipCache[pid]?.data;
+  if (d) shipCache[pid] = { ...shipCache[pid], data: { ...d, findings: j.findings, canPush: false } };
+  else loadShip(pid);
+  shipConfirm = null;
+  if (view !== 'ship') go({ view: 'ship' }); else renderShip();
+}
+function pgPanel(p, d) {
+  const fs = d.findings || [];
+  if (!fs.length) return null;
+  const sig = fs.map((f) => f.id).join('|');
+  if (sig !== pgSeen) { pgSeen = sig; announce(`Push blocked: ${fs.length} finding${fs.length === 1 ? '' : 's'} to review in Ship`); }
+  const rows = fs.map((f) => {
+    const asking = pgConfirm && pgConfirm.pid === p.id && pgConfirm.findingId === f.id;
+    return h('li', { class: 'pg-row', 'data-finding': f.id },
+      h('span', { class: 'pg-file mono', text: pgWhere(f) }),
+      h('span', { class: 'pg-reason', text: f.reason }),
+      f.excerpt ? h('code', { class: 'pg-excerpt mono', text: f.excerpt }) : null,
+      asking
+        ? h('div', { class: 'pg-acts' },
+            h('span', { class: 'pg-ask', text: `Allow pushing ${pgWhere(f)} even though: ${f.reason}? This allows only this one finding.` }),
+            h('button', { class: 'btn primary', 'data-override-confirm': '', onclick: () => overrideOne(p.id, f.id) }, 'Confirm: allow this one'),
+            h('button', { class: 'btn ghost', 'data-default': '', onclick: () => { pgConfirm = null; renderShip(); } }, 'Cancel'))
+        : h('div', { class: 'pg-acts' },
+            h('button', { class: 'btn', 'data-override': '', 'aria-label': `Allow this one: ${pgWhere(f)}`, onclick: () => askOverride(p.id, f.id) }, 'Allow this one')));
+  });
+  return h('div', { class: 'pg', id: 'pgBlocked', role: 'group', 'aria-labelledby': 'pgTitle' },
+    h('h3', { id: 'pgTitle', text: `Push blocked: ${fs.length} finding${fs.length === 1 ? '' : 's'} to review` }),
+    h('p', { text: 'Before anything leaves your computer, Local checks what would be pushed for secrets, private key files and files that should not be public. Fix each one and commit, or allow it yourself if you are sure it is safe.' }),
+    h('ul', { class: 'pg-rows' }, rows),
+    d.overridden ? h('p', { text: `${d.overridden} other finding${d.overridden === 1 ? ' is' : 's are'} already allowed by you.` }) : null);
+}
 async function loadShip(pid, fetchGithub = true) {
   shipCache[pid] = { ...(shipCache[pid] || {}), loading: true };
   if (view === 'ship') renderShip();
@@ -2400,21 +2455,24 @@ function renderShip() {
       : !n ? h('p', { class: 'status' }, lamp('ok'), 'GitHub is up to date')
       : h('p', { class: 't2', text: `${n} commit${n > 1 ? 's' : ''} on Local's main that GitHub does not have` });
     const confirming = shipConfirm === p.id && d.canPush; // the palette can ask before Ship has loaded
-    gh = [h('p', { class: 'mono t2', text: d.remote }), line,
+    const blocked = pgPanel(p, d);
+    if (!blocked) pgSeen = '';
+    gh = [h('p', { class: 'mono t2', text: d.remote }), line, blocked,
       n && !d.behind && !d.fetchError ? h('div', { class: 'ship-commits' }, d.ahead.slice(0, 10).map((x) => h('div', { class: 'c' }, h('span', { class: 'mono muted' }, x.sha.slice(0, 8), copyBtn(x.sha, 'SHA')), h('span', { class: 'ellipsis', text: x.subject }))),
         n > 10 ? h('div', { class: 'c' }, h('span'), h('span', { class: 'muted', text: `+${n - 10} more` })) : null) : null,
       h('div', { style: 'display:flex; gap:8px; align-items:center; flex-wrap:wrap' },
         confirming
           ? [h('button', { class: 'btn primary', onclick: async () => {
                 shipConfirm = null;
-                const r = await post(`/api/projects/${p.id}/push`, { sha: d.local });
+                const r = await post(`/api/projects/${p.id}/push`, { sha: d.local }, (m, j) => { if (j?.findings) pushBlocked(p.id, j); else toast(m, true); });
                 if (r) toast(`Pushed ${r.pushed} commit${r.pushed > 1 ? 's' : ''} to GitHub`);
                 loadShip(p.id);
               } }, icon('ship'), `Confirm: push ${n} to ${p.base_branch}`),
              h('button', { class: 'btn ghost', onclick: () => { shipConfirm = null; renderShip(); } }, 'Cancel'),
              h('span', { class: 'muted', style: 'font-size:13px', text: 'Fast-forward only. Uses your own git sign-in' })]
           // Promoted to primary after render: only one of the two push buttons exists at a time
-          : h('button', { class: 'btn', 'data-push': '', disabled: !d.canPush || !!c.loading, onclick: () => askPush(p.id) }, icon('ship'), n ? `Push ${n} commit${n > 1 ? 's' : ''} to GitHub` : 'Push to GitHub'))];
+          : [h('button', { class: 'btn', 'data-push': '', disabled: !d.canPush || !!c.loading, 'aria-describedby': blocked ? 'pgPushWhy' : null, onclick: () => askPush(p.id) }, icon('ship'), n ? `Push ${n} commit${n > 1 ? 's' : ''} to GitHub` : 'Push to GitHub'),
+             blocked ? h('span', { id: 'pgPushWhy', class: 'muted', style: 'font-size:13px', text: 'Disabled until every finding above is fixed or allowed' }) : null])];
   }
   put($('v-ship'), h('div', { class: 'narrow' },
     h('div', { style: 'display:flex; align-items:center; gap:16px' }, h('h1', { class: 'grow', text: 'Ship' }), recheck),
@@ -2428,6 +2486,7 @@ function renderShip() {
         h('td', { class: 'mono t2' }, t.pr_number ? '#' + t.pr_number : '', copyBtn(t.pr_number, 'PR number')), h('td', { class: 'mono' }, short(t.merge_sha), copyBtn(t.merge_sha, 'SHA')), h('td', {}, statusEl(t.status)))))))
       : emptyState('Nothing merged yet', 'Each task that merges into your local main will be listed here')));
   $('v-ship').querySelector('[data-push]')?.classList.add('primary');
+  $('v-ship').querySelector('.pg-row [data-default]')?.focus();
 }
 
 // ----- Projects -----
@@ -2485,7 +2544,7 @@ async function pushAll() {
   const p = proj(); if (!p || pushing) return;
   pushing = true;
   try {
-    const r = await post(`/api/projects/${p.id}/push-now`);
+    const r = await post(`/api/projects/${p.id}/push-now`, null, (m, j) => { if (j?.findings) pushBlocked(p.id, j); else toast(m, true); });
     if (r) { toast(`Pushed ${r.pushed} commit${r.pushed === 1 ? '' : 's'} to GitHub, tagged ${r.tag}`); delete shipCache[p.id]; refresh(); }
   } finally { pushing = false; }
 }
