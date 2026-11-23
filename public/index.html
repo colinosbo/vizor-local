@@ -452,6 +452,80 @@
     .stats { grid-template-columns:1fr 1fr; } .stat.hero { grid-column:1 / -1; }
     .ov-grid { grid-template-columns:1fr; }
   }
+  /* Wide overview keeps its look: Needs you comes first in the DOM (so narrow reading order is status, Needs you, Board) and is placed in the right column here. */
+  @media (min-width: 1101px) {
+    .ov-grid > .col-main { grid-column:1; grid-row:1; }
+    .ov-grid > .col-need { grid-column:2; grid-row:1; }
+  }
+
+  /* Narrow windows (below 900px): every control is at least 40px tall, icon-only controls 40px wide,
+     and the shell stacks to one column in reading order: sidebar nav, status strip, Needs you, Board. */
+  @media (max-width: 899px) {
+    html, body { height:auto; }
+    body { display:block; }
+    aside { height:auto; overflow:visible; flex-direction:row; flex-wrap:wrap; align-items:flex-start; gap:8px 16px; padding:8px 12px; border-right:0; border-bottom:1px solid var(--line); }
+    aside > div { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; width:100%; min-width:0; }
+    aside .stack { flex-direction:row; flex-wrap:wrap; width:auto; }
+    aside .side-label { margin:0; }
+    aside .nav, aside .wordmark { width:auto; max-width:100%; }
+    .side-foot { margin-top:0; flex-direction:row; flex-wrap:wrap; padding:0 8px; }
+    main { display:block; height:auto; }
+    header { flex-wrap:wrap; gap:4px 12px; padding:8px 16px; }
+    header .path { flex-basis:100%; order:3; }
+    .strip { flex-wrap:wrap; max-width:100%; }
+    .view { overflow:visible; }
+    .pad { padding:16px; }
+    .canvas, .run { padding:16px; overflow:visible; }
+    #v-plan, #v-run { display:block; overflow:visible; }
+    .chat { border-right:0; border-bottom:1px solid var(--line); }
+    .thread { padding:16px; overflow:visible; }
+    .composer, .chat-actions { padding-left:16px; padding-right:16px; }
+    .tlist { border-right:0; border-bottom:1px solid var(--line); overflow:visible; }
+    .stats { grid-template-columns:minmax(0,1fr); }
+    .stat .fig, .stat.hero .fig { white-space:normal; overflow-wrap:anywhere; }
+    .pgrid { grid-template-columns:repeat(auto-fill, minmax(min(320px,100%), 1fr)); }
+    .prow { grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) auto; gap:12px; padding:0 12px; height:auto; }
+    .panel-head, .lrow, .srow, .rm-row, .rm-head, .attn, .rm-auto { padding-left:12px; padding-right:12px; }
+    .rm-sub, .rm-gap { padding-left:12px; padding-right:12px; }
+    .detail { grid-template-columns:minmax(0,1fr); gap:4px; padding:16px; }
+    .detail dd { margin-bottom:8px; }
+    .log .ln { grid-template-columns:minmax(0,1fr); gap:0; }
+    .form .row { flex-wrap:wrap; }
+    .form .row > .field { flex:1 1 100% !important; }
+    .ship-commits .c { grid-template-columns:minmax(0,1fr); height:auto; min-height:32px; padding:4px 16px; gap:0; }
+    .planning .clock { font-size:32px; line-height:36px; }
+    .ov.first { min-height:0; }
+    /* Board: columns become a single stack. Each cell names its column, and the sticky column heads go away. */
+    .kanban { grid-template-columns:minmax(0,1fr); min-width:0; }
+    .khead { display:none; }
+    .cell:empty { display:none; }
+    .cell[data-label]::before { content:attr(data-label); font-size:12px; line-height:16px; color:var(--muted); }
+    .lane-head { height:auto; flex-wrap:wrap; }
+    .lane-head .bar { display:none; }
+    .lane-head .lname { white-space:normal; }
+    .lane-head .grow { flex-basis:100%; order:5; white-space:normal; }
+    .tcard .meta, .tcard .act { white-space:normal; }
+    .status { white-space:normal; }
+    /* Overlays fit the viewport. */
+    .pal-scrim { padding:8vh 8px 8px; }
+    .pal { max-height:84vh; }
+    .pal-opt { grid-template-columns:16px minmax(0,1fr) auto; }
+    .pal-opt .kind { display:none; }
+    #tcPop, #infoPop { max-width:calc(100vw - 16px); }
+    #toast { left:16px; right:16px; bottom:16px; max-width:none; }
+
+    /* Hit targets. Selectors carry the specificity of the rules they override. */
+    .btn, .rm-row .btn, td .btn, .rm-gap .btn, .btn.ghost, .guard .btn,
+    .nav, .nav.proj, .tlist .nav, .board-history .nav, .wordmark, .sitem,
+    .seg button, .rm-mode, .lane-head, .disclosure, .project-link,
+    .tcard, .node, .prow, .pal-opt,
+    input[type=text], input[type=number], select, textarea, .pal-in input[type=text],
+    .check, .guard .opt, .info-btn, .copy { min-height:40px; }
+    .info-btn, .copy { min-width:40px; }
+    .rm-gap { min-height:40px; }
+    .rm-gap .btn { opacity:1; }
+    .seg { max-width:100%; flex-wrap:wrap; }
+  }
   /* View change: fade in with a 6px rise. Added by enterView() only when the shown view changes. */
   @keyframes view-in { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
   .view.entering { animation:view-in var(--t-view) var(--ease); }
@@ -1799,8 +1873,9 @@ function renderOverview() {
   const live = ts.filter((t) => t.status === 'running');
 
   put($('v-overview'), h('div', { class: 'ov' }, head, renderSetupChecklist(p), h('div', { class: 'stats' }, hero, workers, etaCard),
-    h('div', { class: 'ov-grid' },
-      h('div', { class: 'col' },
+    // Needs you comes first in the DOM so keyboard, screen-reader and narrow visual order all read status, Needs you, then the rest. CSS puts it back in the right column on wide screens.
+    h('div', { class: 'ov-grid' }, ...[
+      h('div', { class: 'col col-main' },
         panel('Progress by plan', null, planRows.length ? planRows : emptyState('No approved plans', 'Progress per plan shows here once a plan is approved',
           { label: 'Open plan', icon: 'plan', onclick: () => go({ view: 'plan' }) })),
         phases.length ? panel('Roadmap', `${phases.filter((x) => x.status === 'done').length} of ${phases.length}`, phases.map((ph) => {
@@ -1809,7 +1884,7 @@ function renderOverview() {
         })) : null,
         panel('Recently merged', null, merged.length ? merged.map((t) => h('div', { class: 'lrow' }, lamp('ok'), h('span', { class: 'ellipsis', text: t.title }),
           h('span', { class: 'mono muted', text: (t.pr_number ? `#${t.pr_number} · ` : '') + ago(sqlTime(t.updated_at)) }))) : emptyState('Nothing merged yet', 'The last five merged tasks will appear here as they land'))),
-      h('div', { class: 'col' },
+      h('div', { class: 'col col-need' },
         panel('Needs you', attn.length || null, attn.length ? attn : emptyState('Nothing needs you', 'Held tasks, failed pushes and plans to approve will appear here'),
           due.length > 1 ? h('button', { class: 'btn', onclick: () => retryMany(due) }, icon('retry'), 'Retry all') : null),
         panel('Running now', live.length || null, live.length ? live.map((t) => {
@@ -1817,7 +1892,7 @@ function renderOverview() {
           return h('div', { class: 'lrow' }, lamp('live'), h('span', { class: 'ellipsis', text: t.title }), h('span', { class: 'mono muted', text: a ? fmtDur(Date.now() - sqlTime(a.started_at).getTime()) : '' }));
         }) : p.paused
           ? emptyState('No worker is running', 'Dispatch is paused, so no task will start', { label: 'Resume dispatch', icon: 'play', onclick: togglePause })
-          : emptyState('No worker is running', 'Tasks that are ready will start here when a worker is free'))))));
+          : emptyState('No worker is running', 'Tasks that are ready will start here when a worker is free')))].reverse())));
 }
 
 // ----- Board: status columns x swimlanes (by plan, by dependency wave, or none) -----
@@ -1924,10 +1999,10 @@ function renderBoard() {
           segBar(lc), h('span', { class: 'mono muted cnt', text: `${lc.merged} / ${lane.tasks.length}` })) : null,
           open ? COLUMNS.map(([label, states]) => {
             const ts = lane.tasks.filter((t) => states.includes(t.status));
-            if (label !== 'Merged') return h('div', { class: 'cell', 'data-cell': lane.id + '|' + label }, ts.map((t) => { const card = taskCard(t); card.dataset.col = label; return card; }));
+            if (label !== 'Merged') return h('div', { class: 'cell', 'data-cell': lane.id + '|' + label, 'data-label': label }, ts.map((t) => { const card = taskCard(t); card.dataset.col = label; return card; }));
             ts.sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
             const every = mergedAll.has(lane.id), extra = ts.length - MERGED_CAP;
-            return h('div', { class: 'cell', 'data-cell': lane.id + '|' + label }, (every ? ts : ts.slice(0, MERGED_CAP)).map(mini),
+            return h('div', { class: 'cell', 'data-cell': lane.id + '|' + label, 'data-label': label }, (every ? ts : ts.slice(0, MERGED_CAP)).map(mini),
               extra > 0 ? h('button', { class: 'btn ghost more', onclick: () => { if (every) mergedAll.delete(lane.id); else mergedAll.add(lane.id); renderBoard(); }, text: every ? 'Show fewer' : `Show ${extra} more` }) : null);
           }) : null,
         ];
