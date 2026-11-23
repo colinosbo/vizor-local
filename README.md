@@ -51,3 +51,9 @@ Everything lives in `~/.local-poc` on your machine. Vizor pushes to GitHub only 
 ## More
 
 Details on the CLI, per-project settings, internals and what is not built yet: [docs/reference.md](docs/reference.md).
+
+## Third-party
+
+The bundled unslop skill (`skills/unslop`) was created by Damir Sokolovsky ([@heydamir](https://github.com/heydamir)) and is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Source: https://github.com/heydamir/unslop. The copy in this repository was modified (it inlines the Tokens and Signs references) and stays under CC BY 4.0. See [NOTICE.md](NOTICE.md).
+
+The rest of the repository is MIT licensed, see [LICENSE](LICENSE).
