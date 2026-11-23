@@ -152,6 +152,16 @@
   .notes .err { color:#f08a8d; } .notes .warn { color:var(--text-2); }
   .approve { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
   .approve p { font-size:13px; color:var(--muted); max-width:520px; }
+  .guard { background:var(--card); border:1px solid var(--line-2); border-radius:12px; padding:16px; display:flex; flex-direction:column; gap:12px; max-width:640px; }
+  .guard h2 { font-size:15px; font-weight:500; }
+  .guard p { font-size:13px; line-height:20px; color:var(--text-2); }
+  .guard ul { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:4px; font-size:13px; }
+  .guard li { display:flex; gap:12px; align-items:baseline; min-height:24px; }
+  .guard li .grow { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .guard .acts { display:flex; gap:8px; flex-wrap:wrap; }
+  .btn.danger { background:none; border-color:color-mix(in srgb, #e5484d 45%, transparent); color:#f08a8d; }
+  .btn.danger:hover { background:color-mix(in srgb, #e5484d 12%, transparent); }
+  .guard .btn:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 
   .graph { background:var(--deep); border:1px solid var(--line); border-radius:12px; padding:16px; overflow:auto; }
   .lanes { position:relative; display:flex; gap:56px; align-items:flex-start; width:max-content; }
@@ -643,11 +653,11 @@ function copyBtn(text, label) {
 }
 // onError(message) replaces the error toast when a caller shows the message itself.
 async function post(path, body, onError) {
-  const fail = (m) => { if (onError) onError(m); else toast(m, true); return null; };
+  const fail = (m, j) => { if (onError) onError(m, j); else toast(m, true); return null; };
   try {
     const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok) return fail(j.error || `Request failed (${r.status})`);
+    if (!r.ok) return fail(j.error || `Request failed (${r.status})`, j);
     return j;
   } catch { return fail('Local is not reachable'); }
 }
@@ -1179,9 +1189,16 @@ function planCanvas(p) {
 
   if (plan.status === 'draft') {
     const prev = plans.find((x) => x.status === 'approved');
+    const guard = approveGuard?.planId === plan.id ? approveGuard : null;
+    if (guard) { out.push(approveGuardPanel(plan, guard.tasks)); return out; }
     out.push(h('div', { class: 'approve' },
       h('button', { class: 'btn primary', disabled: validation.errors.length > 0, onclick: async () => {
-        if (await post(`/api/plans/${plan.id}/approve`)) { toast(`Plan v${plan.version} approved`); refresh(); }
+        const mine = prev ? inFlightOf(prev.id) : [];
+        if (mine.length) return openApproveGuard(plan.id, mine);
+        const ok = await post(`/api/plans/${plan.id}/approve`, undefined, (m, j) => {
+          if (Array.isArray(j?.inFlight) && j.inFlight.length) openApproveGuard(plan.id, j.inFlight); else toast(m, true);
+        });
+        if (ok) { toast(`Plan v${plan.version} approved`); refresh(); }
       } }, `Approve plan v${plan.version}`),
       h('p', { text: validation.errors.length ? 'Fix the errors above with a new request first'
         : prev ? `Starts work now. From plan v${prev.version}, tasks not started yet are cancelled and running ones are held for you` : 'Starts work now, within the worker limit' })));
@@ -1189,6 +1206,43 @@ function planCanvas(p) {
     out.push(h('div', { class: 'approve' }, h('button', { class: 'btn', onclick: () => go({ view: 'board' }) }, icon('board'), 'Open board')));
   }
   return out;
+}
+
+// ----- Approve guard: same in-flight rule as src/plan.ts; nothing is posted until the owner confirms -----
+let approveGuard = null; // { planId, tasks }
+const inFlightOf = (planId) => state.tasks.filter((t) => t.plan_id === planId
+  && (['running', 'waiting_ci', 'merging'].includes(t.status) || (t.pr_number != null && !['merged', 'cancelled'].includes(t.status))))
+  .map((t) => ({ id: t.id, key: t.key, title: t.title, status: t.status, pr_number: t.pr_number }));
+function openApproveGuard(planId, tasks) {
+  approveGuard = { planId, tasks };
+  renderPlan();
+  document.querySelector('.guard [data-default]')?.focus();
+}
+function closeApproveGuard() {
+  approveGuard = null;
+  renderPlan();
+  document.querySelector('.approve .btn.primary')?.focus();
+}
+function approveGuardPanel(plan, tasks) {
+  const n = tasks.length;
+  const confirm = async () => {
+    const ok = await post(`/api/plans/${plan.id}/approve`, { force: true });
+    if (ok) { approveGuard = null; toast(`Plan v${plan.version} approved, ${n} held`); refresh(); }
+  };
+  return h('div', { class: 'guard', role: 'alertdialog', 'aria-labelledby': 'guardTitle', 'aria-describedby': 'guardBody',
+    onkeydown: (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeApproveGuard(); }
+      else if (e.key === 'Enter' && !e.target.hasAttribute('data-confirm')) { e.preventDefault(); e.stopPropagation(); closeApproveGuard(); }
+    } },
+    h('h2', { id: 'guardTitle', text: `${n} ${n === 1 ? 'task is' : 'tasks are'} still in flight` }),
+    h('ul', {}, tasks.map((t) => h('li', {},
+      h('span', { class: 'mono muted', text: t.key }), h('span', { class: 'grow', text: t.title }),
+      h('span', { class: 'mono', text: STATUS[t.status]?.[0] || t.status }),
+      t.pr_number != null ? h('span', { class: 'mono muted', text: `PR #${t.pr_number}` }) : null))),
+    h('p', { id: 'guardBody', text: `Approving anyway holds ${n === 1 ? 'this task' : 'these tasks'} for an owner decision. ${n === 1 ? 'It' : 'They'} will not merge unless you later choose Merge anyway` }),
+    h('div', { class: 'acts' },
+      h('button', { class: 'btn primary', 'data-default': '', onclick: closeApproveGuard }, 'Cancel'),
+      h('button', { class: 'btn danger', 'data-confirm': '', onclick: confirm }, `Approve and hold ${n} ${n === 1 ? 'task' : 'tasks'}`)));
 }
 
 // ----- Roadmap: phases drafted one after another; every plan still needs the owner's approval -----
@@ -1913,6 +1967,8 @@ function boardKey(e) {
 document.addEventListener('keydown', (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable;
   if (e.key === 'Escape' && typing) return e.target.blur();
+  if (approveGuard && e.key === 'Escape') return closeApproveGuard();
+  if (e.target.closest?.('.guard')) return;
   if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
   if (boardKey(e)) return;
   const i = Number(e.key);
