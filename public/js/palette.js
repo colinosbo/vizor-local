@@ -9,6 +9,7 @@ import { approvePlan, openRoadmapEditor, planValidation } from './plan.js';
 import { BOARD_KEYS, hidePop } from './board.js';
 import { canCancelTask, openCancelTask } from './run.js';
 import { askPush } from './ship.js';
+import { checkUpdateNow, runUpdate, updateInfo } from './update.js';
 
 // ----- Command palette (Ctrl+K / Cmd+K): projects, views, tasks in this project, and actions -----
 // Every action calls the same function as its visible button and is hidden or disabled when it does not apply.
@@ -44,9 +45,21 @@ function paletteActions() {
     p.auto_approve_halted && { id: 'auto-resume', label: 'Resume auto-approve', icon: 'play', hint: p.auto_approve_halted, run: () => paletteAuto(p, 'auto-approve-resume', undefined, 'Auto-approve resumed') },
   ].filter(Boolean);
 }
+// Global actions, listed in every view including Home. They call the same handlers as the update panel buttons.
+function updateActions() {
+  const u = updateInfo();
+  return [
+    { id: 'update-check', label: 'Check for updates', icon: 'retry',
+      disabled: !u.loaded ? 'Update status not loaded yet' : !u.checkEnabled ? 'Update checks are turned off'
+        : !u.gitInstall ? (u.reason || 'This copy isn’t a git install') : u.busy ? 'An update is running' : null,
+      run: checkUpdateNow },
+    u.behind > 0 && !u.busy && { id: 'update-apply', label: 'Update Vizor', icon: 'retry', hint: `${u.behind} commit${u.behind === 1 ? '' : 's'} behind`,
+      disabled: u.eligible ? null : (u.reason || 'Not eligible to update'), run: () => runUpdate('apply') },
+  ].filter(Boolean);
+}
 function paletteItems() {
   const p = proj();
-  const items = paletteActions().map((a) => ({ ...a, kind: 'Action' }));
+  const items = [...paletteActions(), ...updateActions()].map((a) => ({ ...a, kind: 'Action' }));
   items.push({ id: 'view:home', kind: 'View', label: 'Home', icon: 'home', run: () => go({ view: 'home' }) });
   VIEWS.forEach(([k, label], i) => { if (p || k === 'projects') items.push({ id: 'view:' + k, kind: 'View', label, icon: k, keys: [String(i + 1)], run: () => go({ view: k }) }); });
   for (const x of state.projects) items.push({ id: 'project:' + x.id, kind: 'Project', label: x.name, hint: x.repo_path, lamp: projectStatus(x)[1], lampLabel: projectStatus(x)[0] || 'Idle',
