@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
+import { uiSource } from './helpers/ui-source.js';
 import { SUPERSEDED_HOLD } from '../src/plan.js';
 
-const html = fs.readFileSync(path.join(process.cwd(), 'public', 'index.html'), 'utf8');
+const html = uiSource();
 
 test('the UI hold reason is exactly the one the server writes', () => {
   assert.match(html, new RegExp(`const SUPERSEDED_HOLD = '${SUPERSEDED_HOLD.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}';`));

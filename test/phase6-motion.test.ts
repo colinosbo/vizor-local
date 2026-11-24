@@ -2,11 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
+import { uiSource } from './helpers/ui-source.js';
 
 // Phase 6 motion guards over public/index.html: one easing curve, durations only from tokens, reduced motion
 // stops everything, the running lamp is the only loop, and live refreshes do not replay entrances.
 
-const html = fs.readFileSync(path.join(process.cwd(), 'public', 'index.html'), 'utf8');
+const html = uiSource();
 const rawStyle = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/g)].map((m) => m[1]).join('\n');
 const style = rawStyle.replace(/\/\*[\s\S]*?\*\//g, '');
 const script = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');

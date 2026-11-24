@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
+import { uiSource } from './helpers/ui-source.js';
 
-const html = fs.readFileSync(path.join(process.cwd(), 'public', 'index.html'), 'utf8');
+const html = uiSource();
 
 const bar = html.slice(html.indexOf('function autoBar(p)'), html.indexOf('function roadmapCard(p)'));
 const card = html.slice(html.indexOf('function roadmapCard(p)'), html.indexOf('function drawEdges()'));

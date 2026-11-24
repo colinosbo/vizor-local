@@ -2,10 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
+import { uiSource } from './helpers/ui-source.js';
 
 // Static checks over public/index.html for the Board card details: nothing here runs the page.
 
-const html = fs.readFileSync(path.join(process.cwd(), 'public', 'index.html'), 'utf8');
+const html = uiSource();
 
 /** Source of a top-level `function name(` declaration, up to the next top-level declaration or comment. */
 const fnSource = (name: string): string => {

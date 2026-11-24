@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
+import { uiSource } from './helpers/ui-source.js';
 import vm from 'node:vm';
 
 // Phase 6 accessibility guards over public/index.html: the live region, tab order, focus rings,
@@ -9,7 +10,7 @@ import vm from 'node:vm';
 // Static text scans like test/ui.test.ts; each check is a pure function over a string so the
 // tests can also prove it fails on a seeded violation.
 
-const html = fs.readFileSync(path.join(process.cwd(), 'public', 'index.html'), 'utf8');
+const html = uiSource();
 
 const stripComments = (src: string): string =>
   src

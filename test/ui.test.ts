@@ -2,13 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
+import { uiSource } from './helpers/ui-source.js';
 
 // Static guards over public/index.html. Nothing here runs the page: every check is a
 // pragmatic text scan, so each heuristic is documented where it is used. The checks
 // are exported as pure functions over a string so the tests can also prove that they
 // fail on a seeded violation.
 
-const html = fs.readFileSync(path.join(process.cwd(), 'public', 'index.html'), 'utf8');
+const html = uiSource();
 
 /** Replace comments with spaces (same length) so offsets stay valid. `//` only counts at line start or after whitespace, so `http://` in strings is safe. */
 const stripComments = (src: string): string =>

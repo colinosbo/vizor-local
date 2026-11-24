@@ -2,11 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
+import { uiSource } from './helpers/ui-source.js';
 
 // Static guard over public/index.html: the Phase 9 update UI (indicator, panel, progress, rollback error,
 // settings) exists with accessible names, writes commit subjects as text and never sends an update source.
 
-const html = fs.readFileSync(path.join(process.cwd(), 'public', 'index.html'), 'utf8').replace(/\r\n/g, '\n');
+const html = uiSource().replace(/\r\n/g, '\n');
 const style = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/g)].map((m) => m[1]).join('\n').replace(/\/\*[\s\S]*?\*\//g, '');
 const markup = html.replace(/<script\b[\s\S]*?<\/script>/g, '').replace(/<style\b[\s\S]*?<\/style>/g, '').replace(/<!--[\s\S]*?-->/g, '');
 const start = html.indexOf('// ---------- updates ----------');

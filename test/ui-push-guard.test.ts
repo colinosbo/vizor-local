@@ -2,11 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
+import { uiSource } from './helpers/ui-source.js';
 
 // Static guard over public/index.html: the Ship view shows push guard findings, offers a confirmed
 // per-finding override only, and renders the findings a 409 from push or push-now carries.
 
-const html = fs.readFileSync(path.join(process.cwd(), 'public', 'index.html'), 'utf8');
+const html = uiSource();
 const style = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/g)].map((m) => m[1]).join('\n').replace(/\/\*[\s\S]*?\*\//g, '');
 const start = html.indexOf('// Push guard: one finding at a time');
 const end = html.indexOf('async function loadShip');
