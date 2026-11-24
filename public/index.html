@@ -723,6 +723,11 @@
           <h2 id="settingsTitle">Settings</h2>
           <label class="field"><span>Test command</span><input type="text" id="sCi" class="mono" spellcheck="false"><small>Runs in a clean checkout of every PR and after every merge</small></label>
           <label class="field"><span>Workers</span><input type="number" id="sWorkers" min="1" max="6"></label>
+          <label class="field"><span>Planner model</span>
+            <select id="sPlannerModel"><option value="auto">Auto routing</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></label>
+          <label class="field"><span>Worker model</span>
+            <select id="sWorkerModel"><option value="auto">Auto routing</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select>
+            <small>Auto keeps the planner's per-task pick</small></label>
           <label class="check"><input type="checkbox" id="sAutoPush">Push to GitHub when every task has merged</label>
           <small class="muted" style="font-size:12px; line-height:16px; margin-top:-8px">Runs after each plan or roadmap phase finishes. Fast-forward only, never forces. Needs a GitHub repo connected in Ship</small>
           <label class="check"><input type="checkbox" id="sAutoApprove">Auto-approve plans</label>
@@ -2599,9 +2604,10 @@ function renderShip() {
     h('div', { class: 'card form' }, h('h2', { text: 'GitHub' }), gh),
     h('div', { style: 'display:flex; align-items:baseline; gap:12px' }, h('h2', { text: 'Local merge history' }), h('span', { class: 'mono muted', text: String(merged.length) })),
     merged.length ? h('div', { class: 'card', style: 'overflow:auto' }, h('table', {},
-      h('thead', {}, h('tr', {}, ['Task', 'Plan', 'PR', 'Merge commit', 'Status'].map((x) => h('th', { text: x })))),
+      h('thead', {}, h('tr', {}, ['Task', 'Plan', 'Model', 'PR', 'Merge commit', 'Status'].map((x) => h('th', { text: x })))),
       h('tbody', {}, merged.map((t) => h('tr', {},
         h('td', {}, h('button', { class: 'btn ghost project-link', onclick: () => go({ view: 'run', selTask: t.id }), text: t.title })), h('td', { class: 'mono t2', text: 'v' + (planFor(t.plan_id)?.version ?? '') }),
+        h('td', { class: 'mono t2', 'data-ship-model': '', text: t.model || 'default' }),
         h('td', { class: 'mono t2' }, t.pr_number ? '#' + t.pr_number : '', copyBtn(t.pr_number, 'PR number')), h('td', { class: 'mono' }, short(t.merge_sha), copyBtn(t.merge_sha, 'SHA')), h('td', {}, statusEl(t.status)))))))
       : emptyState('Nothing merged yet', 'Each task that merges into your local main will be listed here')));
   $('v-ship').querySelector('[data-push]')?.classList.add('primary');
@@ -2628,6 +2634,7 @@ function renderProjects() {
     $('settingsTitle').textContent = `Settings for ${p.name}`;
     $('sCi').value = p.ci_command; $('sWorkers').value = p.max_workers; $('sAutoPush').checked = !!p.auto_push;
     $('sAutoApprove').checked = p.auto_approve === 1;
+    $('sPlannerModel').value = p.planner_model || 'auto'; $('sWorkerModel').value = p.worker_model || 'auto';
     $('sNotify').checked = notifyOn(p.id);
   }
   if (document.activeElement !== $('gWorkers')) $('gWorkers').value = state.settings.find((s) => s.key === 'global_max_workers')?.value ?? 4;
@@ -2673,7 +2680,8 @@ async function togglePause() {
 }
 $('settingsForm').onsubmit = async (e) => {
   e.preventDefault(); const p = proj(); if (!p) return;
-  if (await post(`/api/projects/${p.id}/config`, { ciCommand: $('sCi').value, maxWorkers: Number($('sWorkers').value), autoPush: $('sAutoPush').checked })) { toast('Settings saved'); document.activeElement.blur(); refresh(); }
+  if (await post(`/api/projects/${p.id}/config`, { ciCommand: $('sCi').value, maxWorkers: Number($('sWorkers').value), autoPush: $('sAutoPush').checked,
+    planner_model: $('sPlannerModel').value, worker_model: $('sWorkerModel').value })) { toast('Settings saved'); document.activeElement.blur(); refresh(); }
 };
 $('sAutoApprove').onchange = async (e) => {
   const box = e.currentTarget, p = proj(); if (!p) return;
@@ -2814,7 +2822,7 @@ function paletteItems() {
   for (const x of state.projects) items.push({ id: 'project:' + x.id, kind: 'Project', label: x.name, hint: x.repo_path, lamp: projectStatus(x)[1], lampLabel: projectStatus(x)[0] || 'Idle',
     run: () => go({ current: x.id, view: view === 'projects' || view === 'home' ? 'overview' : view, selTask: null }) });
   if (p) for (const t of tasksOf(p.id).filter((t) => t.status !== 'cancelled').sort((a, b) => Number(isOpenTask(b)) - Number(isOpenTask(a))))
-    items.push({ id: 'task:' + t.id, kind: 'Task', label: t.title, hint: t.key, lamp: (STATUS[t.status] || [])[1] || '', lampLabel: STATUS[t.status]?.[0] || t.status, open: isOpenTask(t), run: () => go({ view: 'run', selTask: t.id }) });
+    items.push({ id: 'task:' + t.id, kind: 'Task', label: t.title, hint: `${t.key} · ${t.model || 'default'}`, lamp: (STATUS[t.status] || [])[1] || '', lampLabel: STATUS[t.status]?.[0] || t.status, open: isOpenTask(t), run: () => go({ view: 'run', selTask: t.id }) });
   return items;
 }
 // Subsequence match: every query character in order. Contiguous runs and word starts score higher; null = no match.
