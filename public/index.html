@@ -81,6 +81,12 @@
   .side-foot .row { display:flex; align-items:center; gap:8px; }
   .conn { width:6px; height:6px; border-radius:50%; background:var(--muted); }
   .conn.on { background:var(--pos); }
+  .ver-foot { display:flex; align-items:center; gap:8px; width:100%; min-height:24px; padding:0; border:0; border-radius:4px; background:none; color:var(--muted); font:inherit; text-align:left; cursor:pointer; transition:color var(--t-fast) var(--ease); }
+  .ver-foot[hidden], .ver-upd[hidden] { display:none; }
+  .ver-foot:hover { color:var(--text-2); }
+  .ver-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ver-upd { display:inline-flex; align-items:center; gap:6px; margin-left:auto; color:var(--text-2); white-space:nowrap; }
+  .ver-dot { width:6px; height:6px; border-radius:50%; background:var(--accent); }
 
   /* Shell */
   main { display:grid; grid-template-rows:56px minmax(0,1fr); height:100vh; min-width:0; }
@@ -638,6 +644,7 @@
   <div class="side-foot">
     <button class="nav" type="button" id="updInd" aria-haspopup="dialog" aria-expanded="false" aria-controls="updPanel" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg><span id="updIndText">Update available</span><span class="mono" id="updIndCount"></span></button>
     <div class="row"><span class="conn" id="conn"></span><span id="connText">Connecting</span></div>
+    <button class="ver-foot" type="button" id="verFoot" hidden><span class="mono ver-label" id="verLabel"></span><span class="ver-upd" id="verUpd" hidden><span class="ver-dot" aria-hidden="true"></span>Update available</span></button>
     <div id="globalCap"></div>
   </div>
 </aside>

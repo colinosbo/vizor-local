@@ -14,7 +14,7 @@ import { cancelTask, closeCancelTask, closeMergeAnyway, mergeAnyway, renderRun }
 import { renderShip } from './ship.js';
 import { renderProjects } from './projects.js';
 import { isPaletteKey, palOpen, renderPalette, togglePalette } from './palette.js';
-import './update.js';
+import { openUpd, updateInfo } from './update.js';
 
 // ---------- render ----------
 // render() runs on every SSE batch, so the entrance plays only when the visible view actually changes.
@@ -28,7 +28,7 @@ function enterView(section) {
 }
 function render() {
   showProjectDrafts(proj());
-  renderSide(); renderHeader();
+  renderSide(); renderVersion(); renderHeader();
   const shown = view === 'home' ? 'home' : !proj() && view !== 'projects' ? 'none' : view;
   for (const s of document.querySelectorAll('main > section')) s.hidden = s.id !== 'v-' + shown;
   const entering = shown !== shownView;
@@ -77,6 +77,19 @@ function renderSide() {
   const busy = state.tasks.filter((t) => t.status === 'running').length;
   $('globalCap').textContent = `${busy} of ${g} workers busy across projects`;
 }
+
+// The footer shows the server's version label; an older server sends none, so then it stays hidden.
+function renderVersion() {
+  const label = state.version?.label;
+  $('verFoot').hidden = !label;
+  if (!label) return;
+  const upd = updateInfo(), available = upd.behind > 0 && !upd.busy;
+  $('verLabel').textContent = label;
+  $('verUpd').hidden = !available;
+  $('verFoot').setAttribute('aria-label', available ? `Vizor Local ${label}, update available` : `Vizor Local ${label}`);
+}
+$('verFoot').addEventListener('click', () => openUpd());
+document.addEventListener('vizor:update-status', renderVersion);
 
 function renderHeader() {
   const p = view === 'home' ? null : proj();
