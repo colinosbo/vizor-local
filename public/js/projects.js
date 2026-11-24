@@ -6,6 +6,71 @@ import {
   setNotify, setRoute, state, toast, writeHash
 } from './core.js';
 
+// ----- Forge and review gate -----
+// Built here, not in index.html: this module owns the card. Every server string goes in through h()/put()/textContent.
+const GATES = [
+  ['off', 'Off', 'No security review'],
+  ['report', 'Report', 'Review every PR and show findings, never hold merges'],
+  ['block', 'Block', 'Hold merges with critical or high findings until you fix them or merge anyway']
+];
+const radio = (name, value, label, note, onchange) => h('label', { class: 'check', style: 'align-items:flex-start' },
+  h('input', { type: 'radio', name, value, onchange }),
+  h('span', {}, label, note ? h('small', { class: 'muted', style: 'display:block;font-size:12px;line-height:16px', text: note }) : null));
+const fRepo = h('input', { type: 'text', id: 'sGithubRepo', class: 'mono', spellcheck: 'false', placeholder: 'owner/name', autocomplete: 'off' });
+const fCheck = h('input', { type: 'text', id: 'sGithubCheck', class: 'mono', spellcheck: 'false', placeholder: 'ci', autocomplete: 'off' });
+const repoField = h('label', { class: 'field' }, h('span', { text: 'Repository' }), fRepo);
+const forgeStatus = h('small', { id: 'forgeStatus', class: 'muted', role: 'status' });
+const forgeError = h('small', { id: 'forgeError', role: 'alert', style: 'color:var(--neg-text)', hidden: true });
+const gateError = h('small', { id: 'gateError', role: 'alert', style: 'color:var(--neg-text)', hidden: true });
+const forgeRadios = [['local', 'Local', 'Merges land in the project folder'], ['github', 'GitHub', 'Merges go through pull requests on GitHub']]
+  .map(([v, l, n]) => radio('forgeKind', v, l, n, () => { repoField.hidden = chosenForge() !== 'github'; }));
+const gateRadios = GATES.map(([v, l, n]) => radio('reviewGate', v, l, n, () => saveGate(v)));
+const chosenForge = () => forgeRadios.map((r) => r.querySelector('input')).find((i) => i.checked)?.value || 'local';
+const showErr = (el, m) => { el.textContent = m || ''; el.hidden = !m; };
+
+const trustedCard = h('div', { class: 'card form', id: 'trustedCard', hidden: true },
+  h('h2', { text: 'Forge and review' }),
+  h('div', { class: 'field', role: 'radiogroup', 'aria-label': 'Forge' }, h('span', { text: 'Forge' }), forgeRadios),
+  repoField,
+  h('label', { class: 'field' }, h('span', { text: 'Required check' }), fCheck,
+    h('small', { text: 'The check that must pass before a pull request merges' })),
+  forgeStatus, forgeError,
+  h('div', {}, h('button', { class: 'btn', type: 'button', onclick: () => saveForge() }, 'Save forge')),
+  h('div', { class: 'field', role: 'radiogroup', 'aria-label': 'Review gate' }, h('span', { text: 'Review gate' }), gateRadios),
+  gateError);
+$('settingsForm').after(trustedCard);
+
+async function saveForge() {
+  const p = proj(); if (!p) return;
+  showErr(forgeError, '');
+  const r = await post(`/api/projects/${encodeURIComponent(p.id)}/config`,
+    { forgeKind: chosenForge(), githubRepo: fRepo.value.trim(), githubCheck: fCheck.value.trim() || 'ci' }, (m) => showErr(forgeError, m));
+  if (r) { toast('Forge saved'); refresh(); }
+}
+async function saveGate(reviewGate) {
+  const p = proj(); if (!p) return;
+  showErr(gateError, '');
+  const r = await post(`/api/projects/${encodeURIComponent(p.id)}/config`, { reviewGate }, (m) => {
+    showErr(gateError, m); setChecked(gateRadios, p.review_gate || 'block');
+  });
+  if (r) { toast('Review gate saved'); refresh(); }
+}
+function setChecked(radios, value) { for (const r of radios) { const i = r.querySelector('input'); i.checked = i.value === value; } }
+
+function renderTrusted(p, fresh) {
+  trustedCard.hidden = !p;
+  if (!p) return;
+  if (fresh) {
+    setChecked(forgeRadios, p.forge_kind === 'github' ? 'github' : 'local');
+    fRepo.value = p.github_repo || ''; fCheck.value = p.github_check || 'ci';
+    setChecked(gateRadios, p.review_gate || 'block');
+    repoField.hidden = chosenForge() !== 'github';
+    showErr(forgeError, ''); showErr(gateError, '');
+  }
+  const f = p.forge;
+  forgeStatus.textContent = !f ? '' : f.ready ? 'Ready' : f.problem || 'Not ready';
+}
+
 // ----- Projects -----
 let settingsFor = null;
 function renderProjects() {
@@ -22,6 +87,7 @@ function renderProjects() {
       { label: 'Add project', onclick: () => $('aPath').focus() })))]));
   const p = proj();
   $('settingsForm').hidden = !p;
+  renderTrusted(p, !!p && (settingsFor !== p.id || !trustedCard.contains(document.activeElement)));
   if (p && (settingsFor !== p.id || !$('settingsForm').contains(document.activeElement))) {
     settingsFor = p.id;
     $('settingsTitle').textContent = `Settings for ${p.name}`;
