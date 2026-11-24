@@ -1,5 +1,6 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { resolve, sep } from 'node:path';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import type { DB } from './db.js';
@@ -20,6 +21,7 @@ import type { Runner } from './runner.js';
 import type { UpdateService } from './update.js';
 
 const page = fileURLToPath(new URL('../../public/index.html', import.meta.url));
+const jsDir = fileURLToPath(new URL('../../public/js/', import.meta.url));
 
 export interface ServerOpts {
   port?: number;            // preferred port; the next free one is used if it is taken
@@ -92,6 +94,15 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
       if (!same(cookieToken(req), token)) {
         if (url.pathname === '/') { res.writeHead(401, { 'content-type': 'text/plain' }); return res.end('Open the full URL printed in the terminal (it contains a one-time key).'); }
         return json(res, 401, { error: 'unauthorized' });
+      }
+      // Browser ES modules: same auth as GET /; anything but GET /js/<name>.js is a plain 404.
+      if (url.pathname.startsWith('/js/')) {
+        const m = req.method === 'GET' ? /^\/js\/([a-z0-9-]+)\.js$/.exec(url.pathname) : null;
+        const file = m ? resolve(jsDir, m[1] + '.js') : '';
+        const dir = jsDir.endsWith(sep) ? jsDir : jsDir + sep;
+        if (!m || !file.startsWith(dir) || !existsSync(file) || !statSync(file).isFile()) return json(res, 404, { error: 'not found' });
+        res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
+        return res.end(readFileSync(file));
       }
       if (req.method !== 'GET') {
         const origin = req.headers.origin ?? '';
