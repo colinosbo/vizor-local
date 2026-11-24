@@ -335,7 +335,8 @@ export class Runner {
           let baseSha: string | null;
           try { baseSha = this.f(pid).baseSha(proj.base_branch); }
           catch (e) {
-            const reason = 'forge unavailable: ' + String((e as Error).message ?? e).slice(0, 200);
+            const msg = String((e as Error).message ?? e).slice(0, 200);
+            const reason = msg.startsWith('forge unavailable') ? msg : 'forge unavailable: ' + msg;
             for (const q of queue) if (q.hold_reason !== reason) this.setTask(q.id, { hold_reason: reason });
             byProject.delete(pid);
             continue;

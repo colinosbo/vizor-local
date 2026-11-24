@@ -5,7 +5,8 @@ import { emit } from './events.js';
 import { resolveLocalOrigin } from './forges.js';
 import { git, revParse } from './git.js';
 import { DENYLIST_GITIGNORE } from './push-guard.js';
-import { DEFAULT_CI, isModelDefault, MODEL_DEFAULTS, type ModelDefault, type Project } from './types.js';
+import { DEFAULT_CI, DEFAULT_GITHUB_CHECK, FORGE_KINDS, isForgeKind, isGithubRepo, isModelDefault, MODEL_DEFAULTS,
+  type ForgeKind, type ModelDefault, type Project } from './types.js';
 
 export const MODEL_DEFAULT_ERROR = (field: string) => `${field} must be one of ${MODEL_DEFAULTS.join(', ')}`;
 
@@ -74,9 +75,10 @@ export function addProject(db: DB, repoPath: string, opts: AddProjectOpts = {}):
 
 /** Owner-only project settings. */
 export function configureProject(db: DB, id: string, c: { ciCommand?: string; maxWorkers?: number; forgeOrigin?: string | null; autoPush?: boolean; autoApprove?: boolean;
-  plannerModel?: ModelDefault; workerModel?: ModelDefault }): Project {
+  plannerModel?: ModelDefault; workerModel?: ModelDefault; forgeKind?: ForgeKind; githubRepo?: string; githubCheck?: string }): Project {
   const p = db.prepare('SELECT * FROM projects WHERE id=?').get(id) as unknown as Project | undefined;
   if (!p) throw new Error(`unknown project ${id}`);
+  const forge = validateForgeSettings(p, c);
   if (c.autoApprove !== undefined && typeof c.autoApprove !== 'boolean') throw new Error('autoApprove must be true or false');
   // Validate both before writing either, so a bad value never leaves a half-applied update.
   if (c.plannerModel !== undefined && !isModelDefault(c.plannerModel)) throw new Error(MODEL_DEFAULT_ERROR('planner_model'));
@@ -97,8 +99,30 @@ export function configureProject(db: DB, id: string, c: { ciCommand?: string; ma
     db.prepare('UPDATE projects SET forge_origin=? WHERE id=?').run(c.forgeOrigin, id);
   }
   if (c.autoPush !== undefined) db.prepare('UPDATE projects SET auto_push=?, auto_push_error=NULL WHERE id=?').run(c.autoPush ? 1 : 0, id);
+  if (forge) db.prepare('UPDATE projects SET forge_kind=?, github_repo=?, github_check=? WHERE id=?').run(forge.kind, forge.repo, forge.check, id);
   emit(db, { projectId: id, type: 'project_configured', data: c });
   return db.prepare('SELECT * FROM projects WHERE id=?').get(id) as unknown as Project;
+}
+
+/**
+ * Resolves the forge columns after applying `c` to `p`, or null when `c` touches none of them.
+ * Throws before anything is written: bad kind, malformed owner/name, empty check, or github with no repo.
+ */
+function validateForgeSettings(p: Project, c: { forgeKind?: unknown; githubRepo?: unknown; githubCheck?: unknown }):
+  { kind: ForgeKind; repo: string | null; check: string } | null {
+  if (c.forgeKind === undefined && c.githubRepo === undefined && c.githubCheck === undefined) return null;
+  if (c.forgeKind !== undefined && !isForgeKind(c.forgeKind)) throw new Error(`forge must be one of ${FORGE_KINDS.join(', ')}`);
+  if (c.githubRepo !== undefined && (typeof c.githubRepo !== 'string' || !isGithubRepo(c.githubRepo.trim())))
+    throw new Error('repo must look like owner/name');
+  if (c.githubCheck !== undefined) {
+    const ok = typeof c.githubCheck === 'string' && c.githubCheck.trim() !== '' && c.githubCheck.length <= 100 && !/[\r\n]/.test(c.githubCheck);
+    if (!ok) throw new Error('check must be one line, 1–100 chars');
+  }
+  const kind: ForgeKind = isForgeKind(c.forgeKind) ? c.forgeKind : p.forge_kind === 'github' ? 'github' : 'local';
+  const repo = typeof c.githubRepo === 'string' ? c.githubRepo.trim() : p.github_repo ?? null;
+  const check = typeof c.githubCheck === 'string' ? c.githubCheck.trim() : p.github_check || DEFAULT_GITHUB_CHECK;
+  if (kind === 'github' && !repo) throw new Error('forge github needs a repo (--repo owner/name)');
+  return { kind, repo, check };
 }
 
 /** `vizor-local .` — open the project bound to the current checkout, or report that setup is needed. */

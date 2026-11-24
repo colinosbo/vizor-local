@@ -13,13 +13,14 @@ import { RoadmapService } from './roadmap.js';
 import { AutoPusher } from './autopush.js';
 import { syncCheckout } from './sync.js';
 import { addProject, configureProject, findProjectForPath } from './projects.js';
-import type { Project } from './types.js';
+import { DEFAULT_GITHUB_CHECK, isForgeKind, type Project } from './types.js';
 import { Runner } from './runner.js';
 import { createTargetRepo, DEMO_PLAN, DEMO_SCENARIO } from './sandbox.js';
 import { startServer } from './server.js';
 import { resolveUpstream, runUpdater, systemRunner, UpdateService, workersBusy } from './update.js';
 import { ClaudeCodeWorkerFactory, FakeWorkerFactory } from './workers.js';
 
+const CONFIG_FLAGS = '[--ci "cmd"] [--workers N] [--forge-origin <bare>] [--forge local|github] [--repo owner/name] [--check name]';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const args = process.argv.slice(2);
 const flag = (name: string, def?: string) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : def; };
@@ -106,7 +107,8 @@ function appDb(): DB { return openDb(join(dataDir(), 'local.db')); }
 
 function describe(p: Project) {
   let forge: string;
-  try { forge = resolveLocalOrigin(p); } catch (e) { forge = `UNAVAILABLE — ${(e as Error).message}`; }
+  if (p.forge_kind === 'github') forge = `github ${p.github_repo ?? '(no repo)'} (check: ${p.github_check || DEFAULT_GITHUB_CHECK})`;
+  else try { forge = resolveLocalOrigin(p); } catch (e) { forge = `UNAVAILABLE — ${(e as Error).message}`; }
   return `${p.id.padEnd(16)} ${p.repo_path}\n${''.padEnd(16)} forge: ${forge}\n${''.padEnd(16)} ci: ${p.ci_command} · workers: ${p.max_workers}${p.paused ? ' · paused' : ''}`;
 }
 
@@ -139,7 +141,7 @@ async function serve() {
       runner.stop();
       void (s?.close() ?? Promise.resolve()).finally(() => { db.close(); process.exit(0); });
     } });
-  s = await startServer(db, runner, planning, { port: Number(flag('port', '4317')), originsDir: join(dir, 'origins'), roadmap, update });
+  s = await startServer(db, runner, planning, { port: Number(flag('port', '4317')), originsDir: join(dir, 'origins'), roadmap, update, forges });
   claimInstance(dir, s.url);
   update.start();
   const projects = db.prepare('SELECT * FROM projects ORDER BY created_at').all() as unknown as Project[];
@@ -168,8 +170,11 @@ async function main() {
     return console.log('added ' + describe(p));
   }
   if (cmd === 'config') {
-    if (!args[1] || args[1].startsWith('--')) throw new Error('usage: config <project-id> [--ci "cmd"] [--workers N] [--forge-origin <bare>]');
-    const p = configureProject(appDb(), args[1], { ciCommand: flag('ci'), maxWorkers: flag('workers') ? Number(flag('workers')) : undefined, forgeOrigin: flag('forge-origin') });
+    if (!args[1] || args[1].startsWith('--')) throw new Error(`usage: config <project-id> ${CONFIG_FLAGS}`);
+    const forge = flag('forge');
+    if (forge !== undefined && !isForgeKind(forge)) throw new Error('--forge must be local or github');
+    const p = configureProject(appDb(), args[1], { ciCommand: flag('ci'), maxWorkers: flag('workers') ? Number(flag('workers')) : undefined, forgeOrigin: flag('forge-origin'),
+      forgeKind: forge, githubRepo: flag('repo'), githubCheck: flag('check') });
     return console.log(describe(p));
   }
   if (cmd === 'projects') {
@@ -188,7 +193,9 @@ async function main() {
                                   --update-upstream (or VIZOR_UPDATE_UPSTREAM) changes where updates come from
   add <checkout> [--name N] [--workers N] [--ci "cmd"] [--base main] [--create-origin]
                                   bind a checkout; --create-origin makes a local forge origin (and git init if needed)
-  config <project> [--ci "cmd"] [--workers N] [--forge-origin <bare>]
+  config <project> ${CONFIG_FLAGS}
+                                  --forge github --repo owner/name [--check ci] merges through GitHub (needs gh auth login);
+                                  --forge local switches back to the local bare-repo forge
   projects                        list projects, their forge and CI command
   open [path] | .                 find the project for a checkout
   (all commands accept --data <dir>; default ~/.local-poc)`);

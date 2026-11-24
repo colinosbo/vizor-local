@@ -8,11 +8,11 @@ import { setSetting } from './db.js';
 import { countUncommitted } from './git.js';
 import { emit, eventsAfter, subscribe, type EventRow } from './events.js';
 import { planCancel } from './cancel.js';
-import { resolveLocalOrigin } from './forges.js';
+import { resolveLocalOrigin, type ForgeRegistry } from './forges.js';
 import { approvePlan, discardPlan, PlanInFlightError, shapeOfBody } from './plan.js';
 import type { PlanningService } from './planning.js';
 import { addProject, configureProject, MODEL_DEFAULT_ERROR } from './projects.js';
-import { isModelDefault } from './types.js';
+import { DEFAULT_GITHUB_CHECK, isModelDefault, type ForgeStatus, type Project } from './types.js';
 import type { RoadmapService } from './roadmap.js';
 import { EMPTY_SETUP, projectSetup } from './setup.js';
 import { clearOverride, overrideFinding, PushBlockedError, pushNow, pushToGithub, setGithubRemote, shipStatus } from './ship.js';
@@ -31,6 +31,7 @@ export interface ServerOpts {
   roadmap?: RoadmapService;
   update?: UpdateService;   // self-update for Vizor Local; routes answer 404 without it
   version?: VersionInfo;    // tests inject a fixed value; otherwise read from the install
+  forges?: Pick<ForgeRegistry, 'forgeStatus'>; // per-project forge health for /api/state
 }
 
 /** The update source is fixed at launch. Any body that tries to name one is refused outright. */
@@ -72,6 +73,14 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
     let s = ''; req.on('data', (d) => { s += d; if (s.length > 1e6) req.destroy(); });
     req.on('end', () => { try { resolve(s ? JSON.parse(s) : {}); } catch { resolve({}); } });
   });
+  /** Per-project forge health. A failing project reports ready:false here and never breaks /api/state. */
+  const forgeStatus = (p: Project, originError: string | null): ForgeStatus => {
+    if (opts.forges) return opts.forges.forgeStatus(p.id);
+    // Without a registry (tests, demo), only a local project's origin can be judged.
+    const base = { repo: p.github_repo ?? null, check: p.github_check || DEFAULT_GITHUB_CHECK };
+    if (p.forge_kind === 'github') return { kind: 'github', ...base, ready: false, problem: 'forge status unavailable' };
+    return { kind: 'local', ...base, ready: originError === null, problem: originError };
+  };
   const same = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
   const cookieToken = (req: IncomingMessage) => {
     for (const part of (req.headers.cookie ?? '').split(';')) {
@@ -127,7 +136,7 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
             try { setup = projectSetup(db, row); } catch { /* setup is advisory; never fail /api/state */ }
             let uncommitted_files = 0;
             try { uncommitted_files = countUncommitted(p.repo_path); } catch { /* folder missing: nothing to count */ }
-            return { ...row, setup, uncommitted_files };
+            return { ...row, setup, uncommitted_files, forge: forgeStatus(p, row.origin_error) };
           }),
           // Every plan version, superseded and task-less ones included. plans has no created_at column, so it
           // comes from the plan_drafted event (null if the event is gone); phase_id is the phase that owns the plan.

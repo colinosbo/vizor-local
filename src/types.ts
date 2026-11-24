@@ -44,7 +44,28 @@ export interface Project {
   ci_command: string;           // trusted CI command, run by the shell in a clean clone of the exact SHA
   planner_model?: ModelDefault; // 'auto' = planner CLI picks its own model
   worker_model?: ModelDefault;  // 'auto' = each task's planner pick (default sonnet)
+  // Optional only so hand-built Project literals stay valid; rows from the db always carry them (column defaults).
+  forge_kind?: ForgeKind;       // 'local' = bare-repo forge; 'github' = GitHub pulls API via gh
+  github_repo?: string | null;  // 'owner/name' for forge_kind 'github'
+  github_check?: string;        // GitHub check-run name that gates merges (default 'ci')
 }
+
+export type ForgeKind = 'local' | 'github';
+export const FORGE_KINDS: readonly ForgeKind[] = ['local', 'github'];
+export const GITHUB_REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+export const DEFAULT_GITHUB_CHECK = 'ci';
+
+/** owner/name per GITHUB_REPO_RE, minus '.'/'..' segments, which would traverse /repos/{repo}/… API paths. */
+export function isGithubRepo(v: unknown): v is string {
+  return typeof v === 'string' && GITHUB_REPO_RE.test(v) && v.split('/').every((s) => s !== '.' && s !== '..');
+}
+
+export function isForgeKind(v: unknown): v is ForgeKind {
+  return typeof v === 'string' && (FORGE_KINDS as readonly string[]).includes(v);
+}
+
+/** Per-project forge health for /api/state. `problem` is a user-facing message, never a token. */
+export interface ForgeStatus { kind: 'local' | 'github'; repo: string | null; check: string; ready: boolean; problem: string | null }
 
 export const DEFAULT_CI = 'node --test';
 

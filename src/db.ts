@@ -154,7 +154,8 @@ export function openDb(path: string): DB {
   ensureColumns(db, 'projects', { forge_origin: 'TEXT', ci_command: "TEXT NOT NULL DEFAULT 'node --test'", roadmap_paused: 'INTEGER NOT NULL DEFAULT 0',
     auto_push: 'INTEGER NOT NULL DEFAULT 0', auto_pushed_sha: 'TEXT', auto_push_error: 'TEXT',
     auto_approve: 'INTEGER NOT NULL DEFAULT 0', auto_approve_halted: 'TEXT',
-    planner_model: "TEXT NOT NULL DEFAULT 'auto'", worker_model: "TEXT NOT NULL DEFAULT 'auto'" }); // 'auto' | 'sonnet' | 'opus'
+    planner_model: "TEXT NOT NULL DEFAULT 'auto'", worker_model: "TEXT NOT NULL DEFAULT 'auto'", // 'auto' | 'sonnet' | 'opus'
+    forge_kind: "TEXT NOT NULL DEFAULT 'local'", github_repo: 'TEXT', github_check: "TEXT NOT NULL DEFAULT 'ci'" }); // 'local' | 'github'
   ensureColumns(db, 'attempts', { model: 'TEXT' });
   ensureColumns(db, 'tasks', { usage_retry_at: 'INTEGER', model: 'TEXT', model_why: 'TEXT' });
   ensureColumns(db, 'phases', { approve_mode: "TEXT NOT NULL DEFAULT 'inherit'", auto_note: 'TEXT', done_note: 'TEXT', roadmap_id: 'INTEGER' });
