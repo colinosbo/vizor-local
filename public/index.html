@@ -367,7 +367,14 @@
   td { height:32px; padding:0 16px; border-bottom:1px solid var(--line); vertical-align:middle; }
   tbody tr:last-child td { border-bottom:0; }
   tr.sel td { background:var(--raised); }
-  .log { background:var(--deep); border:1px solid var(--line); border-radius:12px; padding:8px 0; font:12px/20px var(--mono); max-height:60vh; min-height:120px; overflow:auto; }
+  .log { background:var(--deep); border:1px solid var(--line); border-radius:12px; padding:8px 0; font:12px/20px var(--mono); max-height:60vh; overflow:auto; }
+  .log .empty { max-width:none; padding:4px 16px; font:13px/20px var(--sans); }
+  .ship-table a { color:var(--text); }
+  .ship-table a:focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:4px; }
+  .ship-ref { display:inline-flex; align-items:center; flex-wrap:nowrap; white-space:nowrap; min-width:0; max-width:160px; }
+  .ship-ref > span { overflow:hidden; text-overflow:ellipsis; min-width:0; }
+  .ship-ref .copy { flex:none; }
+  .ship-table td { white-space:nowrap; }
   .log .ln { display:grid; grid-template-columns:64px 168px minmax(0,1fr); gap:12px; padding:0 16px; }
   .log .ln .ty { color:var(--text-2); }
   .log .ln .tx { white-space:pre-wrap; overflow-wrap:anywhere; color:var(--muted); }
@@ -835,7 +842,7 @@ function keepSame(node, kids) {
 }
 // Empty state: what the view shows, why it is empty now, and at most one next action ({ label, onclick, icon }).
 function emptyState(what, why, action) {
-  return h('div', { class: 'empty' }, h('h2', { text: what }), h('p', { text: why }),
+  return h('div', { class: 'empty' }, what ? h('h2', { text: what }) : null, h('p', { text: why }),
     action ? h('button', { class: 'btn', type: 'button', onclick: action.onclick }, action.icon ? icon(action.icon) : null, action.label) : null);
 }
 const NS = 'http://www.w3.org/2000/svg';
@@ -2452,7 +2459,9 @@ function renderRun() {
   const evs = events.filter((e) => e.task_id === t.id);
   const log = h('div', { class: 'log' }, evs.length ? evs.map((e) => h('div', { class: 'ln' + (e.type === 'worker_output' ? ' out' : '') },
     h('span', { class: 'muted', text: hhmmss(new Date(e.ts)) }), h('span', { class: 'ty ellipsis', text: e.type === 'worker_output' ? e.d.kind : e.type.replace(/_/g, ' ') }), h('span', { class: 'tx' }, evText(e), evCopies(e).map((c) => c && copyBtn(c[0], c[1])))))
-    : emptyState('Activity log', 'This task has not produced any events yet; its steps will be listed here as they happen'));
+    : emptyState(null, ['queued', 'running'].includes(t.status)
+      ? 'This task has not produced any events yet; its steps will be listed here as they happen'
+      : 'No events were recorded for this attempt'));
   runEl.dataset.task = t.id;
   put(runEl, 
     h('div', { style: 'display:flex; align-items:center; gap:16px' }, h('h1', { class: 'grow', style: 'overflow-wrap:anywhere', text: t.title }),
@@ -2603,12 +2612,15 @@ function renderShip() {
     folderCard,
     h('div', { class: 'card form' }, h('h2', { text: 'GitHub' }), gh),
     h('div', { style: 'display:flex; align-items:baseline; gap:12px' }, h('h2', { text: 'Local merge history' }), h('span', { class: 'mono muted', text: String(merged.length) })),
-    merged.length ? h('div', { class: 'card', style: 'overflow:auto' }, h('table', {},
-      h('thead', {}, h('tr', {}, ['Task', 'Plan', 'Model', 'PR', 'Merge commit', 'Status'].map((x) => h('th', { text: x })))),
+    merged.length ? h('div', { class: 'card', style: 'overflow:auto' }, h('table', { class: 'ship-table' },
+      h('thead', {}, h('tr', {}, [...['Task', 'Plan', 'Model', 'PR', 'Merge commit', 'Status'], 'Merged', 'Run'].map((x) => h('th', { text: x })))),
       h('tbody', {}, merged.map((t) => h('tr', {},
         h('td', {}, h('button', { class: 'btn ghost project-link', onclick: () => go({ view: 'run', selTask: t.id }), text: t.title })), h('td', { class: 'mono t2', text: 'v' + (planFor(t.plan_id)?.version ?? '') }),
         h('td', { class: 'mono t2', 'data-ship-model': '', text: t.model || 'default' }),
-        h('td', { class: 'mono t2' }, t.pr_number ? '#' + t.pr_number : '', copyBtn(t.pr_number, 'PR number')), h('td', { class: 'mono' }, short(t.merge_sha), copyBtn(t.merge_sha, 'SHA')), h('td', {}, statusEl(t.status)))))))
+        h('td', { class: 'mono t2' }, t.pr_number ? h('span', { class: 'ship-ref', title: 'PR #' + t.pr_number }, h('span', { text: '#' + t.pr_number }), copyBtn(t.pr_number, 'PR number')) : null),
+        h('td', { class: 'mono' }, h('span', { class: 'ship-ref', title: t.merge_sha }, h('span', { text: short(t.merge_sha) }), copyBtn(t.merge_sha, 'SHA'))),
+        h('td', {}, statusEl(t.status)), stampCell(t.updated_at),
+        h('td', {}, h('a', { href: '#', 'data-ship-run': '', onclick: (e) => { e.preventDefault(); go({ view: 'run', selTask: t.id }); }, text: 'Open run' })))))))
       : emptyState('Nothing merged yet', 'Each task that merges into your local main will be listed here')));
   $('v-ship').querySelector('[data-push]')?.classList.add('primary');
   $('v-ship').querySelector('.pg-row [data-default]')?.focus();
