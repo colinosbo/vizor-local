@@ -5,7 +5,7 @@ import path from 'node:path';
 
 const html = fs.readFileSync(path.join(process.cwd(), 'public', 'index.html'), 'utf8');
 
-const ACTIONS = ['Retry task', 'Push to GitHub', 'Pause dispatch', 'Approve plan', 'Add roadmap'];
+const ACTIONS = ['Retry task', 'Push to GitHub', 'Pause dispatch', 'Approve plan', 'New roadmap'];
 
 // The body of paletteActions(), the single list the palette's actions come from.
 function paletteActionList(): string {
@@ -47,7 +47,7 @@ test('palette actions call the same handlers as their buttons', () => {
   assert.match(list, /run: \(\) => approvePlan\(draft\)/);
   assert.match(html, /onclick: \(\) => approvePlan\(plan\) \}, `Approve plan v/);
   assert.match(list, /openRoadmapEditor\(\)/);
-  assert.match(html, /h\('button', \{ class: 'btn ghost', onclick: openRoadmapEditor \}/);
+  assert.match(html, /h\('button', \{ class: 'btn', type: 'button', 'data-rm-new': ''[^\n]*onclick: \(\) => openRoadmapEditor\(null\) \}/);
 });
 
 test('dialog semantics: modal dialog, combobox input, listbox results', () => {

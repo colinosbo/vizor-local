@@ -5,7 +5,7 @@ import type { Orchestrator } from './orchestrator.js';
 import { draftPlan, type PlanValidation } from './plan.js';
 import type { Project } from './types.js';
 
-export interface PlanningRequest { requestId: string; projectId: string; text: string; startedAt: string; lastNote: string | null }
+export interface PlanningRequest { requestId: string; projectId: string; text: string; startedAt: string; lastNote: string | null; lineage: string | null }
 export type PlanningOutcome =
   | { kind: 'drafted'; requestId: string; planId: number; version: number; validation: PlanValidation; reply: string }
   | { kind: 'declined'; requestId: string; reply: string }
@@ -24,8 +24,8 @@ export class PlanningService {
   list(): PlanningRequest[] { return [...this.active.values()]; }
 
   /** Starts planning and returns at once. */
-  start(project: Project, text: string, onDone?: (o: PlanningOutcome) => void): PlanningRequest {
-    const r = this.begin(project, text);
+  start(project: Project, text: string, onDone?: (o: PlanningOutcome) => void, opts: { lineage?: string | null } = {}): PlanningRequest {
+    const r = this.begin(project, text, opts.lineage ?? null);
     const p = this.finish(project, r).then((o) => { try { onDone?.(o); } catch { /* caller's problem */ } return o; });
     this.work.add(p); p.finally(() => this.work.delete(p));
     return r;
@@ -36,11 +36,11 @@ export class PlanningService {
 
   async idle() { while (this.work.size) await Promise.all([...this.work]); }
 
-  private begin(project: Project, text: string): PlanningRequest {
+  private begin(project: Project, text: string, lineage: string | null = null): PlanningRequest {
     text = text.trim().slice(0, 4000);
     if (!text) throw new Error('empty request');
     if ([...this.active.values()].some((r) => r.projectId === project.id)) throw new Error('a plan is already being drafted for this project');
-    const r: PlanningRequest = { requestId: randomUUID(), projectId: project.id, text, startedAt: new Date().toISOString(), lastNote: null };
+    const r: PlanningRequest = { requestId: randomUUID(), projectId: project.id, text, startedAt: new Date().toISOString(), lastNote: null, lineage };
     this.active.set(r.requestId, r);
     this.db.prepare("INSERT INTO messages(project_id, role, text) VALUES (?, 'user', ?)").run(project.id, text);
     emit(this.db, { projectId: project.id, type: 'chat_user', data: { text } });
@@ -67,7 +67,7 @@ export class PlanningService {
         emit(this.db, { projectId: project.id, type: 'plan_declined', data: { requestId: r.requestId, reply } });
         return { kind: 'declined', requestId: r.requestId, reply };
       }
-      const d = draftPlan(this.db, project.id, plan);
+      const d = draftPlan(this.db, project.id, plan, r.lineage);
       const summary = `${reply}\n\nPlan v${d.version}: ${plan.summary}` +
         (d.validation.errors.length ? `\nErrors: ${d.validation.errors.join('; ')}` : '') +
         (d.validation.warnings.length ? `\nWarnings: ${d.validation.warnings.join('; ')}` : '');

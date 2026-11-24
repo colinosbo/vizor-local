@@ -126,6 +126,16 @@ CREATE TABLE IF NOT EXISTS phases (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- A roadmap is one queue of phases. A project can run several roadmaps at once; each advances on its own.
+CREATE TABLE IF NOT EXISTS roadmaps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  title TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',   -- active|done|archived (validated in code)
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  finished_at TEXT
+);
+
 -- Push guard findings the owner explicitly allowed, one finding at a time. Never stores the secret.
 CREATE TABLE IF NOT EXISTS push_overrides (
   project_id TEXT NOT NULL,
@@ -147,8 +157,29 @@ export function openDb(path: string): DB {
     planner_model: "TEXT NOT NULL DEFAULT 'auto'", worker_model: "TEXT NOT NULL DEFAULT 'auto'" }); // 'auto' | 'sonnet' | 'opus'
   ensureColumns(db, 'attempts', { model: 'TEXT' });
   ensureColumns(db, 'tasks', { usage_retry_at: 'INTEGER', model: 'TEXT', model_why: 'TEXT' });
-  ensureColumns(db, 'phases', { approve_mode: "TEXT NOT NULL DEFAULT 'inherit'", auto_note: 'TEXT', done_note: 'TEXT' });
+  ensureColumns(db, 'phases', { approve_mode: "TEXT NOT NULL DEFAULT 'inherit'", auto_note: 'TEXT', done_note: 'TEXT', roadmap_id: 'INTEGER' });
+  // lineage: NULL = a plan drafted from chat; 'roadmap:<id>' = a plan drafted for that roadmap. Approving a plan
+  // supersedes only earlier plans of the same lineage, so a chat plan and several roadmaps can run side by side.
+  ensureColumns(db, 'plans', { lineage: 'TEXT' });
+  adoptLegacyPhases(db);
   return db;
+}
+
+/**
+ * Phases from builds before multiple roadmaps belong to no roadmap. Each project's loose phases become one
+ * roadmap ('done' when every phase is done), and the plans those phases drafted join its lineage.
+ */
+export function adoptLegacyPhases(db: DB) {
+  const loose = db.prepare('SELECT DISTINCT project_id FROM phases WHERE roadmap_id IS NULL').all() as { project_id: string }[];
+  for (const { project_id } of loose) {
+    tx(db, () => {
+      const open = (db.prepare("SELECT COUNT(*) AS n FROM phases WHERE project_id=? AND roadmap_id IS NULL AND status<>'done'").get(project_id) as { n: number }).n;
+      const r = db.prepare("INSERT INTO roadmaps(project_id, title, status, finished_at) VALUES (?, 'Roadmap', ?, ?) RETURNING id")
+        .get(project_id, open ? 'active' : 'done', open ? null : new Date().toISOString()) as { id: number };
+      db.prepare('UPDATE phases SET roadmap_id=? WHERE project_id=? AND roadmap_id IS NULL').run(r.id, project_id);
+      db.prepare('UPDATE plans SET lineage=? WHERE id IN (SELECT plan_id FROM phases WHERE roadmap_id=? AND plan_id IS NOT NULL)').run(`roadmap:${r.id}`, r.id);
+    });
+  }
 }
 
 /** Additive migration for databases created by an older build (CREATE TABLE IF NOT EXISTS skips them). */
