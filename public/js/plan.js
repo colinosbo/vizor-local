@@ -112,6 +112,18 @@ function levels(tasks) {
   return memo;
 }
 
+// Advisory shape of a plan: tasks per wave, longest dependency chain, files several tasks touch. Null when there is nothing to show.
+function shapeLine(shape) {
+  if (!Array.isArray(shape?.waves) || !shape.waves.length) return null;
+  const hot = Array.isArray(shape.hotFiles) ? shape.hotFiles : [];
+  const chain = Array.isArray(shape.chain) ? shape.chain : [];
+  return h('div', { class: 'shape-line', 'data-plan-shape': '' },
+    h('span', { class: 'mono', text: 'Waves ' + shape.waves.map((w) => w.length).join(' · ') }),
+    h('span', { class: 'mono', text: `Longest chain ${shape.longestChain}` }),
+    chain.length ? h('span', { class: 'chain-text', 'data-chain': '', text: 'Longest chain: ' + chain.join(' → ') }) : null,
+    hot.map((f) => h('span', { class: 'mono hot-file', title: f.tasks.join(', '), text: `${f.glob} · ${f.tasks.length} ${f.tasks.length === 1 ? 'task' : 'tasks'}` })));
+}
+
 function planCanvas(p) {
   const out = [];
   const le = lastPlanEvent(p.id);
@@ -138,20 +150,24 @@ function planCanvas(p) {
 
   if (body.summary) out.push(h('p', { class: 'summary', text: body.summary }));
 
+  const shape = shapeLine(plan.shape);
+  if (shape) out.push(shape);
+
   if (validation.errors.length || validation.warnings.length) out.push(h('div', { class: 'notes' },
     validation.errors.map((x) => h('p', { class: 'err', text: x })), validation.warnings.map((x) => h('p', { class: 'warn', text: x }))));
 
   // The moment: dependency graph, live once the plan runs.
   if (body.tasks.length) {
     const lv = levels(body.tasks);
+    const onChain = new Set(Array.isArray(plan.shape?.chain) ? plan.shape.chain : []); // insertion order = chain order
     const waves = [];
     for (const t of body.tasks) (waves[lv.get(t.key)] ||= []).push(t);
-    const lanes = h('div', { class: 'lanes', id: 'lanes' }, waves.filter(Boolean).map((ts, i) => h('div', { class: 'lane' },
+    const lanes = h('div', { class: 'lanes', id: 'lanes', 'data-chain': [...onChain].join(' ') }, waves.filter(Boolean).map((ts, i) => h('div', { class: 'lane' },
       h('div', { class: 'lane-label', text: i === 0 ? 'Starts first' : `After wave ${i}` }),
       ts.map((t) => {
         const lt = live.get(t.key);
         const kind = lt ? (STATUS[lt.status] || [])[1] : '';
-        return h('button', { class: 'node', 'data-key': t.key, 'data-deps': t.deps.join(' '), 'data-status': lt?.status || '', 'aria-pressed': String(selNode === t.key),
+        return h('button', { class: 'node' + (onChain.has(t.key) ? ' on-chain' : ''), 'data-key': t.key, 'data-deps': t.deps.join(' '), 'data-status': lt?.status || '', 'aria-pressed': String(selNode === t.key),
           onclick: () => { setRoute({ selNode: selNode === t.key ? null : t.key }); renderPlan(); } },
           h('div', { class: 'top' }, lamp(kind), h('span', { class: 'mono ellipsis grow', text: t.key }), lt ? h('span', { class: 'mono', text: STATUS[lt.status]?.[0] || lt.status }) : null),
           h('div', { class: 'ttl', text: t.title }),
@@ -422,6 +438,9 @@ function roadmapBlock(p, r, phs) {
 
 function drawEdges() {
   const lanes = $('lanes'); if (!lanes || !lanes.isConnected || !lanes.offsetWidth) return;
+  // Chain order comes from shape.chain (set on the lanes as data-chain); an edge is on the chain when its ends are consecutive keys.
+  const chain = (lanes.dataset.chain || '').split(' ').filter(Boolean);
+  const onChainEdge = (from, to) => { const i = chain.indexOf(from); return i >= 0 && chain[i + 1] === to; };
   lanes.querySelector('svg.edges')?.remove();
   const box = lanes.getBoundingClientRect();
   const svg = document.createElementNS(NS, 'svg');
@@ -434,7 +453,10 @@ function drawEdges() {
     const path = document.createElementNS(NS, 'path');
     path.setAttribute('d', `M${ax} ${ay} C${mx} ${ay}, ${mx} ${by}, ${bx} ${by}`);
     // Stroke comes from CSS so the live edge uses the single --accent token.
-    if (dep.dataset.status === 'merged' && ['running', 'waiting_ci', 'merging'].includes(n.dataset.status)) path.setAttribute('class', 'lit');
+    const cls = [];
+    if (dep.dataset.status === 'merged' && ['running', 'waiting_ci', 'merging'].includes(n.dataset.status)) cls.push('lit');
+    if (onChainEdge(d, n.dataset.key)) cls.push('on-chain');
+    if (cls.length) path.setAttribute('class', cls.join(' '));
     svg.append(path);
   }
   lanes.prepend(svg);
