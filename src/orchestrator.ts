@@ -26,8 +26,17 @@ export const PLAN_SCHEMA = {
 };
 
 export function plannerPrompt(project: Project, files: string, request: string): string {
+  const maxWorkers = project.max_workers ?? 1;
   return `You are the orchestrator for the repository below. Draft a plan for the feature request.
-Split into small tasks with NON-overlapping writeScope globs when they can run in parallel; add deps when one task needs another merged first.
+Planning rules (parallel first):
+a. List every task's exact write scope before deciding deps. Two tasks may run in parallel only if their scopes share no file.
+b. New code goes in new files: each new module, endpoint, view or component gets its own file, and each task adds its own test file. Never append a feature to a shared file when a new file can hold it.
+c. Shared touchpoints (src/server.ts, src/db.ts, src/cli.ts, route tables, navigation, design tokens, shared test helpers) get one owner: a single integration task, usually last, that depends on the tasks it wires together.
+d. Write contracts into the task prompts: when one task needs a field, table column, function signature or endpoint another task creates, state its exact name and shape in both prompts so they can run in parallel. Add a dep only when a task truly needs the other's merged code.
+e. Aim for about ${maxWorkers} tasks per wave (this project's worker limit); more width adds nothing.
+f. If the longest dependency chain is more than 4 tasks, find the file that forces it and restructure (split that file first in its own task) instead of accepting the chain.
+g. One concern per task, so a retry or a usage-limit pause costs little.
+h. End the plan summary with: tasks per wave, longest chain, and one line explaining each chain that remains.
 Each task needs a kebab-case key, prompt, acceptance criteria, writeScope, deps, model and modelWhy. Never include secrets or CI/merge workflow files in scope.
 Model: pick the Claude model that runs each task, and give modelWhy as one short sentence.
 - "opus" for work that needs real problem solving: new architecture or data models, tricky algorithms, concurrency or state machines, security-sensitive logic, cross-cutting refactors, debugging unclear failures.
