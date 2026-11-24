@@ -3,11 +3,12 @@ import type { DB } from './db.js';
 import { emit } from './events.js';
 import type { Orchestrator } from './orchestrator.js';
 import { draftPlan, type PlanValidation } from './plan.js';
+import type { PlanShape } from './plan-shape.js';
 import type { Project } from './types.js';
 
 export interface PlanningRequest { requestId: string; projectId: string; text: string; startedAt: string; lastNote: string | null; lineage: string | null }
 export type PlanningOutcome =
-  | { kind: 'drafted'; requestId: string; planId: number; version: number; validation: PlanValidation; reply: string }
+  | { kind: 'drafted'; requestId: string; planId: number; version: number; validation: PlanValidation; shape: PlanShape; reply: string }
   | { kind: 'declined'; requestId: string; reply: string }
   | { kind: 'failed'; requestId: string; error: string };
 
@@ -72,7 +73,7 @@ export class PlanningService {
         (d.validation.errors.length ? `\nErrors: ${d.validation.errors.join('; ')}` : '') +
         (d.validation.warnings.length ? `\nWarnings: ${d.validation.warnings.join('; ')}` : '');
       say('orchestrator', summary, d.planId);
-      emit(this.db, { projectId: project.id, type: 'plan_ready', data: { requestId: r.requestId, planId: d.planId, version: d.version } });
+      emit(this.db, { projectId: project.id, type: 'plan_ready', data: { requestId: r.requestId, planId: d.planId, version: d.version, shape: d.shape } });
       return { kind: 'drafted', requestId: r.requestId, ...d, reply: summary };
     } catch (e) {
       const error = String((e as Error).message ?? e).slice(0, 500);

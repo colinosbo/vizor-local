@@ -1,6 +1,7 @@
 import type { DB } from './db.js';
 import { tx } from './db.js';
 import { emit } from './events.js';
+import { planShape, type PlanShape } from './plan-shape.js';
 import { scopesOverlap } from './scope.js';
 import { MODEL_CHOICES, type PlanBody } from './types.js';
 
@@ -49,14 +50,33 @@ export function validatePlan(body: PlanBody): PlanValidation {
   return { errors, warnings };
 }
 
+export const EMPTY_SHAPE: PlanShape = { waves: [], width: 0, longestChain: 0, chain: [], hotFiles: [] };
+
+/** Advisory plan shape from any plan body. Missing arrays count as empty; a malformed body gives an empty shape and never throws. */
+export function shapeOfBody(body: unknown): PlanShape {
+  try {
+    const tasks = (body as { tasks?: unknown } | null)?.tasks;
+    if (!Array.isArray(tasks)) return { ...EMPTY_SHAPE };
+    const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+    return planShape(tasks.filter((t) => typeof t === 'object' && t !== null && typeof (t as { key?: unknown }).key === 'string').map((t) => {
+      const o = t as { key: string; deps?: unknown; writeScope?: unknown };
+      return { key: o.key, deps: strings(o.deps), writeScope: strings(o.writeScope) };
+    }));
+  } catch {
+    return { ...EMPTY_SHAPE };
+  }
+}
+
 /** `lineage`: null for a chat plan, 'roadmap:<id>' for a roadmap phase. See approvePlan. */
-export function draftPlan(db: DB, projectId: string, body: PlanBody, lineage: string | null = null): { planId: number; version: number; validation: PlanValidation } {
+export function draftPlan(db: DB, projectId: string, body: PlanBody, lineage: string | null = null): { planId: number; version: number; validation: PlanValidation; shape: PlanShape } {
   const validation = validatePlan(body);
+  // Advisory only: a pure function of the stored body, so that body is the stored record for each version.
+  const shape = shapeOfBody(body);
   return tx(db, () => {
     const v = (db.prepare('SELECT COALESCE(MAX(version),0)+1 AS v FROM plans WHERE project_id=?').get(projectId) as { v: number }).v;
     const r = db.prepare("INSERT INTO plans(project_id, version, status, body, lineage) VALUES (?,?,'draft',?,?) RETURNING id").get(projectId, v, JSON.stringify(body), lineage) as { id: number };
-    emit(db, { projectId, type: 'plan_drafted', data: { planId: r.id, version: v, validation } });
-    return { planId: r.id, version: v, validation };
+    emit(db, { projectId, type: 'plan_drafted', data: { planId: r.id, version: v, validation, shape } });
+    return { planId: r.id, version: v, validation, shape };
   });
 }
 

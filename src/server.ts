@@ -8,7 +8,7 @@ import { countUncommitted } from './git.js';
 import { emit, eventsAfter, subscribe, type EventRow } from './events.js';
 import { planCancel } from './cancel.js';
 import { resolveLocalOrigin } from './forges.js';
-import { approvePlan, discardPlan, PlanInFlightError } from './plan.js';
+import { approvePlan, discardPlan, PlanInFlightError, shapeOfBody } from './plan.js';
 import type { PlanningService } from './planning.js';
 import { addProject, configureProject, MODEL_DEFAULT_ERROR } from './projects.js';
 import { isModelDefault } from './types.js';
@@ -122,7 +122,11 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
                   AND json_extract(e.data,'$.planId')=pl.id) AS created_at,
                (SELECT ph.id FROM phases ph WHERE ph.plan_id=pl.id ORDER BY ph.id LIMIT 1) AS phase_id,
                (SELECT COUNT(*) FROM tasks t WHERE t.plan_id=pl.id) AS task_count
-             FROM plans pl ORDER BY pl.id`).all(),
+             FROM plans pl ORDER BY pl.id`).all().map((pl) => {
+            let body: unknown = null;
+            try { body = JSON.parse(String((pl as { body?: unknown }).body)); } catch { /* malformed body: empty shape */ }
+            return { ...pl, shape: shapeOfBody(body) };
+          }),
           tasks: db.prepare('SELECT * FROM tasks ORDER BY project_id, plan_id, rowid').all(),
           attempts: db.prepare('SELECT * FROM attempts ORDER BY started_at').all(),
           messages: db.prepare('SELECT * FROM messages ORDER BY id').all(),
