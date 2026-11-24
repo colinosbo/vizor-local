@@ -606,6 +606,31 @@
     .rm-gap .btn { opacity:1; }
     .seg { max-width:100%; flex-wrap:wrap; }
   }
+  /* Review shield: a lamp-sized shield beside a count. Tone mirrors the lamps: grey pending, green ok, red bad. Clipped, so fill only. */
+  .shield { width:12px; height:14px; flex:none; background:var(--muted); clip-path:polygon(0 0, 100% 0, 100% 55%, 50% 100%, 0 55%); }
+  .shield[data-tone="pending"] { background:var(--muted); }
+  .shield[data-tone="ok"] { background:var(--pos); }
+  .shield[data-tone="bad"] { background:var(--neg); }
+
+  /* One review finding: a header line (severity, title) over a body. */
+  .finding { display:flex; flex-direction:column; gap:8px; padding:12px; border-radius:8px; background:var(--card); border:1px solid var(--line); min-width:0; }
+  .finding > :first-child { display:flex; align-items:center; gap:8px; min-width:0; }
+  .finding > :not(:first-child) { color:var(--text-2); }
+  .sev { display:inline-flex; align-items:center; flex:none; height:20px; padding:0 8px; border-radius:4px; font-family:var(--mono); font-size:12px; line-height:16px; color:var(--muted); box-shadow:inset 0 0 0 1px var(--line-2); }
+  .sev[data-sev="critical"], .sev[data-sev="high"] { color:var(--neg-text); box-shadow:inset 0 0 0 1px var(--neg); }
+  .sev[data-sev="medium"] { color:var(--text-2); box-shadow:inset 0 0 0 1px var(--text-2); }
+  .sev[data-sev="low"] { color:var(--muted); box-shadow:inset 0 0 0 1px var(--line-2); }
+
+  /* Evidence and command text: wraps, scrolls sideways for long tokens, capped height. */
+  .mono-block { display:block; margin:0; padding:8px 12px; border-radius:6px; background:var(--deep); border:1px solid var(--line); font-family:var(--mono); font-size:12px; line-height:16px; white-space:pre-wrap; overflow:auto; max-height:240px; max-width:100%; }
+
+  /* Longest chain: accent stroke on graph nodes and edge paths. Specific enough to beat .node[aria-pressed] and path.lit. */
+  .on-chain, .node.on-chain, .node.on-chain[aria-pressed="true"] { border-color:var(--accent); }
+  .lanes svg.edges path.on-chain { stroke:var(--accent); stroke-width:2; }
+
+  /* One compact line under a plan version. */
+  .shape-line { margin:0; font-family:var(--mono); font-size:12px; line-height:16px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
   /* View change: fade in with a 6px rise. Added by enterView() only when the shown view changes. */
   @keyframes view-in { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
   .view.entering { animation:view-in var(--t-view) var(--ease); }
