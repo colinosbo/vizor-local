@@ -41,8 +41,9 @@ one-module-per-view rule. There are no other shared modules.
   - board → run (Merge anyway, Cancel task), ship (`pushAll`), plan (`levels`)
   - overview → run (`SUPERSEDED_HOLD`), ship (`pushAll`), plan (`activePhases`)
   - palette → plan, board, run, ship (each action calls the same function as its button)
+  - palette → update (`checkUpdateNow`, `runUpdate`, `updateInfo`)
+  - nav → update (`openUpd`, `updateInfo`; the sidebar footer)
   - ship → run (`stampCell`)
-  - update → palette (`palOpen`)
 
   None of these form a cycle, and none of them import `nav.js`.
 - **Core API for state.** Other modules can read `current`, `view`, `selTask`, `selNode`, `state`
@@ -63,6 +64,8 @@ one-module-per-view rule. There are no other shared modules.
     holds the graph opens.
   - `hooks.events`: list of functions called with every SSE event after the refresh is scheduled.
     `ship.js` uses it to reload or drop its cached `/ship` data.
+  - `vizor:update-status`: a `CustomEvent` on `document`, dispatched by `update.js` at the end of every
+    `renderUpdate()`. The nav footer listens for it and re-reads `updateInfo()`.
 - **Untrusted text** goes through `textContent` or `h()` only. The only `innerHTML` writes are the
   two constant icon strings in `core.js`.
 

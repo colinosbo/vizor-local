@@ -2,7 +2,6 @@
 // update.js: the update indicator, its panel and the updates settings card.
 // The first and last lines are markers the static UI tests read modules by; keep them.
 import { $, announce, h, post, put } from './core.js';
-import { palOpen } from './palette.js';
 
 // ---------- updates ----------
 // Everything here is text: commit subjects and error text are set with textContent, never as markup.
@@ -44,7 +43,7 @@ function renderUpdate() {
   $('updInd').hidden = !showInd;
   $('updIndCount').textContent = showInd ? `· ${behind}` : '';
   if (!showInd && updPanelOpen() && !updBusy) closeUpd(false);
-  if (!on) { $('updErr').hidden = true; return; }
+  if (!on) { $('updErr').hidden = true; announceUpdateStatus(); return; }
 
   // Panel
   if (behind > 0 && !updBusy) {
@@ -76,6 +75,22 @@ function renderUpdate() {
     $('updErrTitle').textContent = le.kind === 'revert' ? 'Revert did not finish' : 'Update did not finish';
     $('updErrText').textContent = String(le.error);
   }
+  announceUpdateStatus();
+}
+// Lets other modules (the nav footer) re-render when update status changes.
+function announceUpdateStatus() { document.dispatchEvent(new CustomEvent('vizor:update-status')); }
+// A fresh snapshot of the update state for the palette and the sidebar.
+function updateInfo() {
+  const eligible = upd?.eligibility?.eligible === true;
+  return {
+    loaded: upd !== null,
+    behind: updBehind(),
+    checkEnabled: !!upd?.checkEnabled,
+    gitInstall: !!upd?.gitInstall,
+    busy: updBusy,
+    eligible,
+    reason: upd && !eligible ? updWhy(upd.eligibility || {}) : null,
+  };
 }
 async function fetchUpdate() {
   if (updBusy) return;
@@ -153,8 +168,10 @@ $('updRevert').onclick = () => {
 };
 $('updRevertCancel').onclick = () => { $('updRevertConfirm').hidden = true; $('updRevert').setAttribute('aria-expanded', 'false'); $('updRevert').focus(); };
 $('updRevertGo').onclick = () => runUpdate('revert');
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && updPanelOpen() && !updBusy && !palOpen) { e.preventDefault(); closeUpd(true); } });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && updPanelOpen() && !updBusy && $('palette').hidden) { e.preventDefault(); closeUpd(true); } });
 fetchUpdate();
 setInterval(() => { if (!document.hidden) fetchUpdate(); }, 10 * 60 * 1000);
+
+export { checkUpdateNow, runUpdate, openUpd, updateInfo };
 
 // </script>
