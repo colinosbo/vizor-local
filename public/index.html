@@ -343,7 +343,22 @@
   /* Run */
   #v-run { display:grid; grid-template-columns:280px minmax(0,1fr); overflow:hidden; }
   .tlist { border-right:1px solid var(--line); overflow:auto; padding:16px 12px; display:flex; flex-direction:column; gap:4px; }
-  .tlist .nav { height:32px; }
+  .tlist .nav { height:auto; min-height:32px; padding:4px 8px; }
+  .tsearch { display:flex; flex-direction:column; gap:4px; margin-bottom:8px; }
+  .tsearch label { font-size:12px; line-height:16px; color:var(--muted); }
+  .tsearch input { width:100%; }
+  .titems { display:flex; flex-direction:column; gap:4px; }
+  .tmeta { display:flex; flex-direction:column; min-width:0; flex:1; }
+  .tmeta .sub { display:flex; gap:8px; font-size:11px; line-height:16px; color:var(--muted); }
+  .run-model { margin:0; color:var(--text-2); overflow-wrap:anywhere; }
+  .run-model .mono { color:var(--text); }
+  .atable { overflow-x:auto; }
+  .atable:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .atable table { min-width:880px; }
+  .atable td { white-space:nowrap; }
+  .atable td.why { white-space:normal; min-width:200px; overflow-wrap:anywhere; padding-top:6px; padding-bottom:6px; }
+  .atable a { color:var(--text); }
+  .atable a:focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:4px; }
   .run { overflow:auto; padding:24px 32px; display:flex; flex-direction:column; gap:16px; min-width:0; }
   .facts { display:flex; flex-wrap:wrap; align-items:center; gap:8px 20px; color:var(--text-2); }
   .hold { border-left:2px solid var(--neg); padding:0 0 0 12px; color:var(--text-2); overflow-wrap:anywhere; }
@@ -688,7 +703,10 @@
   <section class="view pad" id="v-board" hidden></section>
 
   <section class="view" id="v-run" hidden>
-    <div class="tlist" id="tlist"></div>
+    <div class="tlist">
+      <div class="tsearch"><label for="tsearch">Search tasks</label><input type="text" id="tsearch" autocomplete="off" spellcheck="false"></div>
+      <div class="titems" id="tlist"></div>
+    </div>
     <div class="run" id="run"></div>
   </section>
 
@@ -2379,14 +2397,46 @@ function evCopies(e) {
     default: return [];
   }
 }
+// Run view: task list with search, and the attempt table helpers.
+let taskQuery = '', runTasks = [], runNoTasks = null;
+function renderTaskList(tasks, announceCount) {
+  runTasks = tasks;
+  const q = taskQuery.trim().toLowerCase();
+  const shown = q ? tasks.filter((t) => `${t.title} ${t.key || ''}`.toLowerCase().includes(q)) : tasks;
+  put($('tlist'), ...(shown.length ? shown.map((t) => h('button', { class: 'nav', 'aria-current': String(t.id === selTask), onclick: () => go({ selTask: t.id }) },
+    lamp((STATUS[t.status] || [])[1], STATUS[t.status]?.[0] || t.status),
+    h('span', { class: 'tmeta' }, h('span', { class: 'ellipsis', text: t.title }),
+      h('span', { class: 'sub' }, h('span', { text: STATUS[t.status]?.[0] || t.status }), h('span', { class: 'mono ellipsis', text: t.model || 'default' }))),
+    h('span', { class: 'mono muted', text: 'v' + (planFor(t.plan_id)?.version ?? '') })))
+    : tasks.length ? [h('p', { class: 'muted', text: `No tasks match "${taskQuery.trim()}"` })]
+    : [runNoTasks]));
+  if (announceCount) announce(`${shown.length} of ${tasks.length} task${tasks.length === 1 ? '' : 's'} shown`);
+}
+$('tsearch').addEventListener('input', (e) => { taskQuery = e.target.value; renderTaskList(runTasks, true); });
+// Date plus time for the cell; the relative time rides on the tooltip.
+function stampCell(s, cls) {
+  const d = s ? sqlTime(s) : null;
+  if (!d || !Number.isFinite(d.getTime())) return h('td', { class: 'mono t2', text: '–' });
+  return h('td', { class: 'mono t2 ' + (cls || ''), title: ago(d), text: d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) });
+}
+// A PR link only when the project's forge_origin is a github.com repo; otherwise the number alone.
+function prUrl(p, t) {
+  const m = /^(?:https:\/\/github\.com\/|git@github\.com:)([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/.exec(p?.forge_origin || '');
+  return m && t.pr_number ? `https://github.com/${m[1]}/pull/${t.pr_number}` : null;
+}
+function durText(a) {
+  const s = sqlTime(a.started_at).getTime(), e = a.ended_at ? sqlTime(a.ended_at).getTime() : Date.now();
+  if (!Number.isFinite(s) || !Number.isFinite(e)) return '–';
+  const sec = Math.max(0, Math.floor((e - s) / 1000)), hrs = Math.floor(sec / 3600);
+  return (a.ended_at ? '' : 'running ') + (hrs ? `${hrs}:${String(Math.floor(sec / 60) % 60).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}` : fmtClock(sec * 1000));
+}
 function renderRun() {
   const p = proj();
   const tasks = tasksOf(p.id).filter((t) => t.status !== 'cancelled' || t.id === selTask)
     .sort((a, b) => Number(isOpenTask(b)) - Number(isOpenTask(a)) || b.plan_id - a.plan_id);
   if (!tasks.some((t) => t.id === selTask)) selTask = (tasks.find((t) => t.status === 'running') || tasks[0])?.id ?? null;
-  put($('tlist'), ...(tasks.length ? tasks.map((t) => h('button', { class: 'nav', 'aria-current': String(t.id === selTask), onclick: () => go({ selTask: t.id }) },
-    lamp((STATUS[t.status] || [])[1], STATUS[t.status]?.[0] || t.status), h('span', { class: 'grow ellipsis', text: t.title }), h('span', { class: 'mono muted', text: 'v' + (planFor(t.plan_id)?.version ?? '') })))
-    : [emptyState('Tasks', 'No plan has been approved, so there are no tasks', { label: 'Open plan', icon: 'plan', onclick: () => go({ view: 'plan' }) })]));
+  runNoTasks = emptyState('Tasks', 'No plan has been approved, so there are no tasks', { label: 'Open plan', icon: 'plan', onclick: () => go({ view: 'plan' }) });
+  renderTaskList(tasks);
   const t = state.tasks.find((x) => x.id === selTask);
   const runEl = $('run');
   if (!t) return put(runEl, emptyState('Run', 'No task is selected because no plan has been approved', { label: 'Open plan', icon: 'plan', onclick: () => go({ view: 'plan' }) }));
@@ -2408,16 +2458,20 @@ function renderRun() {
     h('div', { class: 'facts' }, statusEl(t.status),
       t.pr_number ? h('span', { class: 'mono' }, `PR #${t.pr_number}`, copyBtn(t.pr_number, 'PR number')) : null,
       t.repair_count ? h('span', { class: 'mono', text: `${t.repair_count} repair${t.repair_count > 1 ? 's' : ''}` }) : null),
+    h('p', { class: 'run-model', 'data-run-model': '' }, 'Model ', h('span', { class: 'mono', text: t.model || 'default' }), t.model_why ? ` · ${t.model_why}` : null),
     t.hold_reason && t.status !== 'merged' ? h('p', { class: t.status === 'blocked' ? 'hold' : 't2', text: t.hold_reason }) : null,
     canMergeAnyway(t) && mergeAnyway?.taskId === t.id ? mergeAnywayPanel(t, mergeAnyway) : null,
     cancelTask?.taskId === t.id ? cancelTaskPanel(t, cancelTask) : null,
-    atts.length ? h('div', { class: 'card', style: 'overflow:hidden' }, h('table', {},
-      h('thead', {}, h('tr', {}, ['Attempt', 'Status', 'Exit', 'Started', 'Note'].map((x) => h('th', { text: x })))),
+    atts.length ? h('div', { class: 'card atable', role: 'region', 'aria-label': 'Attempts', tabindex: '0' }, h('table', {},
+      h('thead', {}, h('tr', {}, ['Attempt', 'Status', 'Exit', 'Started', 'Finished', 'Duration', 'Model', 'Reason', 'PR'].map((x) => h('th', { text: x })))),
       h('tbody', {}, atts.map((a, i) => h('tr', {},
         h('td', { class: 'mono', text: `${i + 1} · ${a.kind}` }),
         h('td', {}, h('span', { class: 'status' }, lamp(a.status === 'running' ? 'live' : a.status === 'succeeded' ? 'ok' : ['failed', 'uncertain'].includes(a.status) ? 'bad' : ''), a.status[0].toUpperCase() + a.status.slice(1))),
-        h('td', { class: 'mono', text: a.exit_code ?? '–' }), h('td', { class: 'mono t2', text: hhmmss(sqlTime(a.started_at)) }),
-        h('td', { class: 't2 ellipsis', style: 'max-width:360px', text: a.reason || '' })))))) : null,
+        h('td', { class: 'mono', text: a.exit_code ?? '–' }), stampCell(a.started_at), stampCell(a.ended_at),
+        h('td', { class: 'mono t2', text: durText(a) }),
+        h('td', { class: 'mono t2', text: a.model || t.model || 'default' }),
+        h('td', { class: 't2 why', text: ['failed', 'uncertain'].includes(a.status) || t.status === 'blocked' ? (a.reason || '') : '' }),
+        h('td', { class: 'mono' }, t.pr_number ? (prUrl(p, t) ? h('a', { href: prUrl(p, t), target: '_blank', rel: 'noopener noreferrer', text: `#${t.pr_number}` }) : `#${t.pr_number}`) : '–')))))) : null,
     h('h2', { text: 'Activity log' }), log,
     disclosure('run:' + t.id, 'Git details', null,
       h('div', { class: 'facts mono' }, h('span', {}, t.branch, copyBtn(t.branch, 'branch name')),
