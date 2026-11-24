@@ -36,12 +36,12 @@ node --disable-warning=ExperimentalWarning dist/src/cli.js serve --orchestrator 
 
 ## What it does
 
-- Plans first. Nothing runs until a plan is approved. Plans wait for you unless you turn on per-project auto-approve. Even then, Local approves a roadmap phase's plan only when: that phase isn't set to "off"; auto-approve isn't halted; every earlier phase is done and merged; no task is pending or running; the plan is valid; it has at most 8 tasks; and it can't touch merge or plan code, package.json, CI config, `.github/`, `.claude/` or `skills/`. It never forces past in-flight work. A failed or blocked task halts auto-approve until you resume it. The planner itself can never approve.
+- Plans first. Nothing runs until a plan is approved. Plans wait for you unless you turn on per-project auto-approve. Even then, Local approves a roadmap phase's plan only when: that phase isn't set to "off"; auto-approve isn't halted; every earlier phase of that roadmap is done and merged; no task of that roadmap or from chat is pending or running; the plan is valid; it has at most 8 tasks; and it can't touch merge or plan code, package.json, CI config, `.github/`, `.claude/` or `skills/`. It never forces past in-flight work. A failed or blocked task halts auto-approve until you resume it. The planner itself can never approve.
 - One git worktree per task, so workers never touch each other.
 - Each task gets a PR in a local forge, with CI run on the exact commit.
 - CI failures are repaired on the same branch, up to 2 times.
 - A PR merges only if CI passed and it stayed inside its task's scope.
-- Roadmaps: paste phases and Vizor plans each one when the last finishes.
+- Roadmaps: paste phases and Vizor plans each one when the last finishes. Up to 3 roadmaps can run in a project at once; each advances on its own, and finished roadmaps fold away. Approving a plan replaces only earlier plans from the same roadmap (or from chat), never another roadmap's.
 - Optional push to GitHub, by button or automatically after a phase. Fast-forward only.
 
 ## Where your data goes

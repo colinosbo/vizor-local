@@ -23,7 +23,7 @@ test('roadmap card has a one-click off switch, and an on switch when off', () =>
   assert.match(bar, /'data-auto-off': '', onclick: \(\) => setAuto\(false\) \}, 'Turn off auto-approve'/);
   assert.match(bar, /'data-auto-on': '', onclick: \(\) => setAuto\(true\) \}, 'Turn on auto-approve'/);
   assert.match(bar, /Limits: max 8 tasks, no protected files, previous phase merged/);
-  assert.match(card, /autoBar\(p\), rows/);
+  assert.match(card, /active\.length \? autoBar\(p\) : null/);
 });
 
 test('halted shows its reason and a Resume button on the resume route', () => {

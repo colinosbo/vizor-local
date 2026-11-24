@@ -35,8 +35,8 @@ test('edit and insert share a title + prompt form with Save and Cancel', () => {
 
 test('Insert phase here sits before every queued phase and after the last phase', () => {
   assert.match(card, /'Insert phase here'/);
-  assert.match(card, /if \(isQueued\) rows\.push\(rmInsertGap\(p, ph\.position\)\)/);
-  assert.match(card, /rows\.push\(rmInsertGap\(p, phs\.length \+ 1\)\)/);
+  assert.match(card, /if \(isQueued\) rows\.push\(rmInsertGap\(p, ph\.position, r\.id\)\)/);
+  assert.match(card, /rows\.push\(rmInsertGap\(p, phs\.length \+ 1, r\.id\)\)/);
 });
 
 test('controls are gated by phase status', () => {
@@ -72,7 +72,7 @@ test('each route is wired once', () => {
   assert.strictEqual((card.match(/`\/api\/phases\/\$\{ph\.id\}\/move`/g) || []).length, 1);
   assert.strictEqual((card.match(/`\/api\/phases\/\$\{ph\.id\}\/edit`/g) || []).length, 1);
   assert.strictEqual((card.match(/`\/api\/phases\/\$\{ph\.id\}\/remove`/g) || []).length, 1);
-  assert.match(card, /\{ position: pos, title: d\.title, prompt: d\.prompt \}/);
+  assert.match(card, /\{ position: pos, roadmapId: rid, title: d\.title, prompt: d\.prompt \}/);
   assert.match(card, /\{ position: to \}/);
   assert.match(card, /\{ title: d\.title, prompt: d\.prompt \}/);
 });

@@ -8,7 +8,7 @@ import { countUncommitted } from './git.js';
 import { emit, eventsAfter, subscribe, type EventRow } from './events.js';
 import { planCancel } from './cancel.js';
 import { resolveLocalOrigin } from './forges.js';
-import { approvePlan, PlanInFlightError } from './plan.js';
+import { approvePlan, discardPlan, PlanInFlightError } from './plan.js';
 import type { PlanningService } from './planning.js';
 import { addProject, configureProject, MODEL_DEFAULT_ERROR } from './projects.js';
 import { isModelDefault } from './types.js';
@@ -117,7 +117,7 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
           // Every plan version, superseded and task-less ones included. plans has no created_at column, so it
           // comes from the plan_drafted event (null if the event is gone); phase_id is the phase that owns the plan.
           plans: db.prepare(
-            `SELECT pl.id, pl.project_id, pl.version, pl.status, pl.body, pl.approved_at,
+            `SELECT pl.id, pl.project_id, pl.version, pl.status, pl.body, pl.approved_at, pl.lineage,
                (SELECT MIN(e.ts) FROM events e WHERE e.type='plan_drafted' AND e.project_id=pl.project_id
                   AND json_extract(e.data,'$.planId')=pl.id) AS created_at,
                (SELECT ph.id FROM phases ph WHERE ph.plan_id=pl.id ORDER BY ph.id LIMIT 1) AS phase_id,
@@ -128,7 +128,8 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
           messages: db.prepare('SELECT * FROM messages ORDER BY id').all(),
           settings: db.prepare('SELECT * FROM settings').all(),
           planning: planning.list(),
-          phases: db.prepare('SELECT * FROM phases ORDER BY project_id, position, id').all(),
+          phases: db.prepare('SELECT * FROM phases ORDER BY project_id, roadmap_id, position, id').all(),
+          roadmaps: db.prepare('SELECT * FROM roadmaps ORDER BY project_id, id').all(),
           lastSeq: (db.prepare('SELECT COALESCE(MAX(seq),0) AS s FROM events').get() as { s: number }).s,
         });
       }
@@ -221,12 +222,16 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
         if (a === 'projects' && action === 'push-override-clear') return json(res, 200, clearOverride(db, runner.project(id) ?? fail('unknown project'), String(body.findingId ?? '')));
         if (a === 'projects' && action === 'github') { await setGithubRemote(db, runner.project(id) ?? fail('unknown project'), String(body.url ?? '')); return json(res, 200, { ok: true }); }
         if (a === 'projects' && action === 'sync') return json(res, 200, syncCheckout(db, runner.project(id) ?? fail('unknown project')));
-        if (a === 'projects' && action === 'roadmap') return json(res, 200, (opts.roadmap ?? fail('roadmap not enabled')).add(id, String(body.text ?? '')));
+        if (a === 'projects' && action === 'roadmap') return json(res, 200, (opts.roadmap ?? fail('roadmap not enabled')).add(id, String(body.text ?? ''), {
+          roadmapId: body.roadmapId === undefined || body.roadmapId === null ? undefined : Number(body.roadmapId),
+          newRoadmap: body.newRoadmap === true, title: typeof body.title === 'string' ? body.title : undefined }));
+        if (a === 'roadmaps' && action === 'archive') { (opts.roadmap ?? fail('roadmap not enabled')).archive(Number(id)); return json(res, 200, { ok: true }); }
         if (a === 'projects' && action === 'roadmap-pause') { (opts.roadmap ?? fail('roadmap not enabled')).pause(id, !!body.paused); return json(res, 200, { ok: true }); }
         if (a === 'phases' && action === 'retry') { (opts.roadmap ?? fail('roadmap not enabled')).retry(Number(id)); return json(res, 200, { ok: true }); }
         if (a === 'phases' && action === 'mark-done') { (opts.roadmap ?? fail('roadmap not enabled')).markDone(Number(id)); return json(res, 200, { ok: true }); }
         if (a === 'phases' && action === 'remove') { (opts.roadmap ?? fail('roadmap not enabled')).remove(Number(id)); return json(res, 200, { ok: true }); }
-        if (a === 'projects' && action === 'phases') return json(res, 200, (opts.roadmap ?? fail('roadmap not enabled')).insert(id, Number(body.position), String(body.title ?? ''), String(body.prompt ?? '')));
+        if (a === 'projects' && action === 'phases') return json(res, 200, (opts.roadmap ?? fail('roadmap not enabled')).insert(id, Number(body.position), String(body.title ?? ''), String(body.prompt ?? ''),
+          body.roadmapId === undefined || body.roadmapId === null ? undefined : Number(body.roadmapId)));
         if (a === 'phases' && action === 'move') return json(res, 200, (opts.roadmap ?? fail('roadmap not enabled')).move(Number(id), Number(body.position)));
         if (a === 'phases' && action === 'edit') return json(res, 200, (opts.roadmap ?? fail('roadmap not enabled')).edit(Number(id), { title: body.title === undefined ? undefined : String(body.title), prompt: body.prompt === undefined ? undefined : String(body.prompt) }));
         if (a === 'plans' && action === 'approve') {
@@ -235,6 +240,7 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
           catch (e) { if (e instanceof PlanInFlightError) return json(res, 409, { error: e.message, inFlight: e.tasks }); throw e; }
           return json(res, 200, { ok: true });
         }
+        if (a === 'plans' && action === 'discard') { discardPlan(db, Number(id)); return json(res, 200, { ok: true }); }
         if (a === 'projects' && action === 'pause') { runner.pause(id, !!body.paused); return json(res, 200, { ok: true }); }
         if (a === 'projects' && action === 'workers') { configureProject(db, id, { maxWorkers: Number(body.maxWorkers) }); return json(res, 200, { ok: true }); }
         if (a === 'settings' && id === 'global') { setSetting(db, 'global_max_workers', String(Math.max(1, Math.min(12, Number(body.globalMaxWorkers) || 1)))); return json(res, 200, { ok: true }); }

@@ -163,6 +163,17 @@
   .canvas-body > * { flex:none; }
   .roadmap { padding:4px 0; }
   .rm-head { display:flex; align-items:center; gap:12px; height:40px; padding:0 20px; }
+  .rm-block { border-top:1px solid var(--line); }
+  .rm-block > .rm-head { height:36px; }
+  .rm-block > .rm-head h3 { font-size:14px; font-weight:500; margin:0; }
+  .rm-empty { display:flex; align-items:center; gap:12px; padding:12px 20px 16px; border-top:1px solid var(--line); font-size:13px; color:var(--text-2); }
+  .rm-done { border-top:1px solid var(--line); padding:0 20px 8px; font-size:13px; color:var(--text-2); }
+  .rm-done summary { cursor:pointer; min-height:32px; display:flex; align-items:center; gap:8px; }
+  .rm-done .lrow { display:flex; align-items:center; gap:12px; min-height:32px; }
+  .chat-hint { display:flex; flex-direction:column; gap:8px; padding:8px 12px; margin-bottom:8px; border:1px solid var(--line); border-radius:6px; font-size:13px; color:var(--text-2); }
+  .chat-hint .row { display:flex; gap:8px; }
+  .plan-src { font-size:13px; color:var(--text-2); }
+  #roadmapName { width:100%; }
   .rm-row { display:grid; grid-template-columns:8px 20px minmax(0,1fr) auto auto; align-items:center; gap:12px; min-height:32px; padding:0 20px; border-top:1px solid var(--line); }
   .rm-row .acts { display:flex; gap:4px; }
   .rm-row.ro { color:var(--text-2); }
@@ -693,6 +704,10 @@
       <div class="chat-actions"><button class="btn ghost" type="button" id="clearChat">Clear chat</button></div>
       <div class="thread" id="thread"></div>
       <div class="composer">
+        <div class="chat-hint" id="chatRoadmapHint" role="alert" hidden>
+          <span>This looks like a roadmap with several phases. As one chat request it becomes a single plan, and anything past 4,000 characters is cut off.</span>
+          <div class="row"><button class="btn" type="button" id="hintRoadmap">Start as a new roadmap</button><button class="btn ghost" type="button" id="hintSend">Send as one plan</button></div>
+        </div>
         <textarea id="chatIn" rows="4" placeholder="Describe a change for this repository" aria-label="Request"></textarea>
         <div class="row">
           <span class="kbd">Ctrl</span><span class="kbd">Enter</span><span class="grow">to send</span>
@@ -702,10 +717,11 @@
     </div>
     <div class="canvas">
       <form class="card form" id="roadmapEditor" hidden>
-        <h2 id="roadmapTitle">Add roadmap phases</h2>
+        <h2 id="roadmapTitle">Start a new roadmap</h2>
+        <input type="text" id="roadmapName" maxlength="120" placeholder="Roadmap name (optional, defaults to the first phase)" aria-label="Roadmap name">
         <p class="t2" style="font-size:13px">Separate phases with a line containing only <span class="mono">---</span>. The first line of each phase is its title. Vizor drafts phase 1 now, and each next phase after the previous one has merged. <span id="rmHelp">You approve every plan</span></p>
         <textarea id="roadmapText" rows="12" class="mono" spellcheck="false" placeholder="Phase 1: Data model&#10;Describe what this phase builds...&#10;---&#10;Phase 2: Logging screens&#10;..."></textarea>
-        <div style="display:flex; gap:8px"><button class="btn" type="submit">Add phases</button><button class="btn ghost" type="button" id="roadmapCancel">Cancel</button></div>
+        <div style="display:flex; gap:8px"><button class="btn" type="submit" id="roadmapSubmit">Start roadmap</button><button class="btn ghost" type="button" id="roadmapCancel">Cancel</button></div>
       </form>
       <div class="canvas-body" id="canvas"></div>
     </div>
@@ -1443,7 +1459,8 @@ function showProjectDrafts(project) {
   $('roadmapEditor').hidden = true;
   $('chatIn').placeholder = project ? 'Describe a change for ' + project.name : '';
   $('chatIn').setAttribute('aria-label', project ? 'Request for ' + project.name : 'Request');
-  $('roadmapTitle').textContent = project ? 'Add roadmap phases for ' + project.name : 'Add roadmap phases';
+  rmTarget = null; $('roadmapTitle').textContent = 'Start a new roadmap'; $('roadmapSubmit').textContent = 'Start roadmap'; $('roadmapName').hidden = false;
+  $('chatRoadmapHint').hidden = true;
 }
 
 function renderPlan() {
@@ -1540,7 +1557,7 @@ function planCanvas(p) {
   const anyRunning = [...live.values()].some((t) => t.status === 'running');
 
   out.push(h('div', { class: 'canvas-head' },
-    h('h1', { text: `Plan v${plan.version}` }),
+    h('h1', { text: `Plan v${plan.version}` }), h('span', { class: 'plan-src', 'data-plan-source': '', text: planSource(plan) }),
     h('span', { class: 'status' }, lamp(anyRunning ? 'live' : plan.status === 'approved' ? 'ok' : ''), statusWord, plan.status === 'superseded' ? infoBtn('superseded') : null),
     h('span', { class: 'grow' }),
     plans.length > 1 ? h('div', { class: 'seg', role: 'group', 'aria-label': 'Plan version' }, plans.slice(0, 8).map((x) =>
@@ -1586,13 +1603,14 @@ function planCanvas(p) {
   }
 
   if (plan.status === 'draft') {
-    const prev = plans.find((x) => x.status === 'approved');
+    const prev = plans.find((x) => x.status === 'approved' && (x.lineage || '') === (plan.lineage || ''));
     const guard = approveGuard?.planId === plan.id ? approveGuard : null;
     if (guard) { out.push(approveGuardPanel(plan, guard.tasks)); return out; }
     out.push(h('div', { class: 'approve' },
       h('button', { class: 'btn primary', disabled: validation.errors.length > 0, onclick: () => approvePlan(plan) }, `Approve plan v${plan.version}`),
+      plan.lineage ? null : h('button', { class: 'btn ghost', type: 'button', 'data-plan-discard': '', onclick: async () => { if (await post(`/api/plans/${plan.id}/discard`)) { toast(`Plan v${plan.version} discarded`); refresh(); } } }, 'Discard draft'),
       h('p', { text: validation.errors.length ? 'Fix the errors above with a new request first'
-        : prev ? `Starts work now. From plan v${prev.version}, tasks not started yet are cancelled and running ones are held for you` : 'Starts work now, within the worker limit' })));
+        : prev ? `Starts work now. From plan v${prev.version}, tasks not started yet are cancelled and running ones are held for you` : 'Starts work now, within the worker limit. Other running plans and roadmaps keep going' })));
   } else if (plan.status === 'approved') {
     out.push(h('div', { class: 'approve' }, h('button', { class: 'btn', onclick: () => go({ view: 'board' }) }, icon('board'), 'Open board')));
   }
@@ -1611,7 +1629,7 @@ function openApproveGuard(planId, tasks) {
 }
 // The Approve plan button and the palette both come through here, so the in-flight guard always applies.
 async function approvePlan(plan) {
-  const prev = plansOf(plan.project_id).find((x) => x.status === 'approved');
+  const prev = plansOf(plan.project_id).find((x) => x.status === 'approved' && (x.lineage || '') === (plan.lineage || ''));
   if (view !== 'plan') go({ view: 'plan' }); // the guard panel lives in Plan
   const mine = prev ? inFlightOf(prev.id) : [];
   if (mine.length) return openApproveGuard(plan.id, mine);
@@ -1694,15 +1712,15 @@ function rmForm(draft, kind, onSave, onCancel) {
     title, prompt, h('div', { class: 'btns' }, save, h('button', { class: 'btn ghost', type: 'button', onclick: onCancel }, 'Cancel')));
 }
 // The 'Insert phase here' slot at 1-based position `pos`; it opens a small title + prompt form.
-function rmInsertGap(p, pos) {
-  const open = rmUi.insert?.pos === pos, key = 'ins:' + pos;
+function rmInsertGap(p, pos, rid) {
+  const open = rmUi.insert?.pos === pos && rmUi.insert?.rid === rid, key = `ins:${rid}:${pos}`;
   const gap = h('div', { class: 'rm-gap' + (open ? ' open' : ''), 'data-rm-gap': String(pos) },
-    open ? null : h('button', { class: 'btn ghost', type: 'button', 'data-rm-key': 'insert-open:' + pos,
-      onclick: () => { rmUi.insert = { pos, title: '', prompt: '' }; rmUi.edit = null; rmUi.confirm = null; delete rmUi.errors[key]; rmRerender('insert-title'); } }, icon('plus'), 'Insert phase here'));
+    open ? null : h('button', { class: 'btn ghost', type: 'button', 'data-rm-key': `insert-open:${rid}:${pos}`,
+      onclick: () => { rmUi.insert = { pos, rid, title: '', prompt: '' }; rmUi.edit = null; rmUi.confirm = null; delete rmUi.errors[key]; rmRerender('insert-title'); } }, icon('plus'), 'Insert phase here'));
   if (!open && !rmUi.errors[key]) return gap;
   const d = rmUi.insert;
-  const close = () => { rmUi.insert = null; delete rmUi.errors[key]; rmRerender('insert-open:' + pos); };
-  const save = async () => { if (await rmCall(key, `/api/projects/${encodeURIComponent(p.id)}/phases`, { position: pos, title: d.title, prompt: d.prompt }, 'insert-open:' + pos)) rmUi.insert = null; };
+  const close = () => { rmUi.insert = null; delete rmUi.errors[key]; rmRerender(`insert-open:${rid}:${pos}`); };
+  const save = async () => { if (await rmCall(key, `/api/projects/${encodeURIComponent(p.id)}/phases`, { position: pos, roadmapId: rid, title: d.title, prompt: d.prompt }, `insert-open:${rid}:${pos}`)) rmUi.insert = null; };
   return [gap, h('div', { class: 'rm-sub ins' }, open ? rmForm(d, 'insert', save, close) : null, rmErr(key))];
 }
 // Auto-approve controls for the roadmap card. The project setting is the only switch; phases can opt out.
@@ -1719,14 +1737,53 @@ function autoBar(p) {
       h('span', { text: `Auto-approve halted: ${p.auto_approve_halted}` }),
       h('button', { class: 'btn', type: 'button', 'data-auto-resume': '', onclick: resume }, 'Resume auto-approve')) : null);
 }
-function openRoadmapEditor() { $('roadmapEditor').hidden = false; $('roadmapText').focus(); }
+// rmTarget: null = the editor starts a new roadmap; a roadmap row = the editor appends phases to it.
+let rmTarget = null;
+function openRoadmapEditor(target = null, text = null) {
+  rmTarget = target;
+  $('roadmapTitle').textContent = target ? `Add phases to ${target.title}` : 'Start a new roadmap';
+  $('roadmapSubmit').textContent = target ? 'Add phases' : 'Start roadmap';
+  $('roadmapName').hidden = !!target;
+  if (text != null) $('roadmapText').value = text;
+  $('roadmapEditor').hidden = false; $('roadmapText').focus();
+}
+const roadmapsOf = (pid) => (state.roadmaps || []).filter((r) => r.project_id === pid);
+const activePhases = (pid) => { const live = new Set(roadmapsOf(pid).filter((r) => r.status === 'active').map((r) => r.id));
+  return (state.phases || []).filter((x) => x.project_id === pid && live.has(x.roadmap_id)); };
+/** Where a plan came from: a chat request or a roadmap phase. */
+function planSource(plan) {
+  const m = /^roadmap:(\d+)$/.exec(plan.lineage || '');
+  if (!m) return 'From chat';
+  const r = (state.roadmaps || []).find((x) => x.id === Number(m[1]));
+  const ph = (state.phases || []).find((x) => x.plan_id === plan.id);
+  return `Roadmap ${r ? r.title : ''}${ph ? ` · phase ${ph.position}` : ''}`.replace('Roadmap  ', 'Roadmap ');
+}
 function roadmapCard(p) {
   const help = $('rmHelp');
   if (help) help.textContent = p.auto_approve === 1 ? 'Plans that pass the auto-approve limits start on their own; the rest wait for you' : 'You approve every plan';
-  const phs = (state.phases || []).filter((x) => x.project_id === p.id).sort((a, b) => a.position - b.position);
-  const add = h('button', { class: 'btn ghost', onclick: openRoadmapEditor }, icon('plus'), phs.length ? 'Add phases' : 'Add roadmap');
-  if (!phs.length) return h('div', { class: 'card roadmap' }, h('div', { class: 'rm-head', style: 'padding-bottom:8px' }, h('h2', { text: 'Roadmap' }),
-    h('span', { class: 'grow muted', style: 'font-size:13px', text: 'Queue several phases. Each is drafted after the previous one merges, and queued phases stay editable until then' }), add));
+  const all = roadmapsOf(p.id);
+  const active = all.filter((r) => r.status === 'active'), finished = all.filter((r) => r.status === 'done').reverse();
+  const phasesIn = (rid) => (state.phases || []).filter((x) => x.roadmap_id === rid).sort((a, b) => a.position - b.position);
+  const full = active.length >= 3;
+  const newTitle = full ? 'At most 3 roadmaps run at once. Finish or archive one first' : 'Runs alongside any roadmap already running';
+  const start = h('button', { class: 'btn', type: 'button', 'data-rm-new': '', disabled: full, title: newTitle, onclick: () => openRoadmapEditor(null) }, icon('plus'), active.length ? 'New roadmap' : 'Start a new roadmap');
+  const head = h('div', { class: 'rm-head' }, h('h2', { text: 'Roadmaps' }),
+    h('span', { class: 'mono muted', text: active.length ? `${active.length} running` : 'none running' }),
+    p.roadmap_paused && active.length ? h('span', { class: 't2', style: 'font-size:13px', text: 'Paused' }) : null, h('span', { class: 'grow' }),
+    active.length ? h('button', { class: 'btn ghost', onclick: async () => { if (await post(`/api/projects/${p.id}/roadmap-pause`, { paused: !p.roadmap_paused })) refresh(); } },
+      icon(p.roadmap_paused ? 'play' : 'pause'), p.roadmap_paused ? 'Resume all' : 'Pause all') : null, start);
+  const empty = active.length ? null : h('div', { class: 'rm-empty', 'data-rm-empty': '' },
+    h('span', { text: finished.length ? `${finished[0].title} is finished. Start a new roadmap to queue the next phases` : 'Queue several phases. Each is drafted after the previous one merges, and queued phases stay editable until then. Several roadmaps can run at once' }));
+  const done = finished.length ? h('details', { class: 'rm-done', 'data-rm-finished': '' },
+    h('summary', {}, icon('down'), `Finished roadmaps (${finished.length})`),
+    finished.map((r) => { const n = phasesIn(r.id).length;
+      return h('div', { class: 'lrow', 'data-roadmap': String(r.id) }, lamp('ok'), h('span', { class: 'ellipsis grow', text: r.title }),
+        h('span', { class: 'mono muted', text: `${n} phase${n === 1 ? '' : 's'}${r.finished_at ? ' · ' + ago(sqlTime(r.finished_at)) : ''}` }),
+        h('button', { class: 'btn ghost', type: 'button', 'data-rm-archive': '', onclick: async () => { if (await post(`/api/roadmaps/${r.id}/archive`)) { toast(`${r.title} archived`); refresh(); } } }, 'Archive')); })) : null;
+  return h('div', { class: 'card roadmap' }, head, active.length ? autoBar(p) : null, empty,
+    active.map((r) => roadmapBlock(p, r, phasesIn(r.id))), done);
+}
+function roadmapBlock(p, r, phs) {
   // Drop open forms whose phase moved on while the form was open.
   const statusOf = (id) => phs.find((x) => x.id === id)?.status;
   if (rmUi.edit && statusOf(rmUi.edit.id) !== 'queued') rmUi.edit = null;
@@ -1740,7 +1797,7 @@ function roadmapCard(p) {
     const plan = ph.plan_id ? planFor(ph.plan_id) : null;
     const isQueued = ph.status === 'queued', readOnly = ['drafting', 'running', 'done'].includes(ph.status);
     const qi = queued.indexOf(ph), editing = isQueued && rmUi.edit?.id === ph.id;
-    if (isQueued) rows.push(rmInsertGap(p, ph.position));
+    if (isQueued) rows.push(rmInsertGap(p, ph.position, r.id));
     const move = (to, k) => rmCall(ph.id, `/api/phases/${ph.id}/move`, { position: to }, `${k}:${ph.id}`);
     const remove = () => { rmUi.confirm = null; return rmCall(ph.id, `/api/phases/${ph.id}/remove`, {}, null); };
     const btn = (attrs, ic) => h('button', { class: 'btn ghost', type: 'button', ...attrs }, icon(ic));
@@ -1780,13 +1837,14 @@ function roadmapCard(p) {
       if (err || confirm || need || note) rows.push(h('div', { class: 'rm-sub' }, need, note, confirm, err));
     }
   });
-  rows.push(rmInsertGap(p, phs.length + 1));
-  return h('div', { class: 'card roadmap' },
-    h('div', { class: 'rm-head' }, h('h2', { text: 'Roadmap' }), h('span', { class: 'mono muted', text: `${done} of ${phs.length} done` }),
-      p.roadmap_paused ? h('span', { class: 't2', style: 'font-size:13px', text: 'Paused' }) : null, h('span', { class: 'grow' }),
-      h('button', { class: 'btn ghost', onclick: async () => { if (await post(`/api/projects/${p.id}/roadmap-pause`, { paused: !p.roadmap_paused })) refresh(); } },
-        icon(p.roadmap_paused ? 'play' : 'pause'), p.roadmap_paused ? 'Resume' : 'Pause'), add),
-    autoBar(p), rows);
+  rows.push(rmInsertGap(p, phs.length + 1, r.id));
+  const live = phs.some((x) => ['drafting', 'review', 'running'].includes(x.status));
+  return h('div', { class: 'rm-block', 'data-roadmap': String(r.id) },
+    h('div', { class: 'rm-head' }, h('h3', { class: 'ellipsis', text: r.title }), h('span', { class: 'mono muted', text: `${done} of ${phs.length} done` }), h('span', { class: 'grow' }),
+      h('button', { class: 'btn ghost', type: 'button', 'data-rm-add': '', onclick: () => openRoadmapEditor(r) }, icon('plus'), 'Add phases'),
+      live ? null : h('button', { class: 'btn ghost', type: 'button', 'data-rm-archive': '', title: 'Hide this roadmap. Its queued phases will not run',
+        onclick: async () => { if (await post(`/api/roadmaps/${r.id}/archive`)) { toast(`${r.title} archived`); refresh(); } } }, 'Archive')),
+    rows);
 }
 
 function drawEdges() {
@@ -1809,8 +1867,13 @@ function drawEdges() {
   lanes.prepend(svg);
 }
 
-async function sendRequest(projectId, text) {
+// Two or more '---'-separated chunks whose first lines look like phase titles: probably a roadmap pasted into chat.
+const looksLikeRoadmap = (text) => { const parts = text.replace(/\r\n/g, '\n').split(/^\s*-{3,}\s*$/m).map((x) => x.trim()).filter(Boolean);
+  return parts.length >= 2 && parts.filter((x) => /^#*\s*(phase|step|milestone)\b/i.test(x)).length >= 2; };
+async function sendRequest(projectId, text, confirmed = false) {
   if (!projectId || !text.trim()) return;
+  if (!confirmed && looksLikeRoadmap(text)) { $('chatRoadmapHint').hidden = false; $('hintRoadmap').focus(); return; }
+  $('chatRoadmapHint').hidden = true;
   if (await post(`/api/projects/${encodeURIComponent(projectId)}/chat`, { text: text.trim() })) {
     clearSubmittedDraft(projectId, 'chat', 'chatIn', text);
     refresh();
@@ -1959,9 +2022,9 @@ function renderOverview() {
     const approval = needsApproval(p.id);
     return put($('v-overview'), h('div', { class: 'ov content-w' }, head, renderSetupChecklist(p), emptyState('Project progress',
       approval ? 'A plan is waiting for your approval, so no tasks exist yet' : planningFor(p.id) ? 'A plan is being drafted, so no tasks exist yet' : 'No plan has been approved, so no tasks exist yet',
-      { label: approval ? 'Review plan' : 'Open plan', icon: 'plan', onclick: () => go({ view: 'plan' }) }))));
+      { label: approval ? 'Review plan' : 'Open plan', icon: 'plan', onclick: () => go({ view: 'plan' }) })));
   }
-  const eta = etaFor(p), unplanned = (state.phases || []).filter((x) => x.project_id === p.id && ['queued', 'drafting', 'review', 'failed'].includes(x.status)).length;
+  const eta = etaFor(p), unplanned = activePhases(p.id).filter((x) => ['queued', 'drafting', 'review', 'failed'].includes(x.status)).length;
   const etaRef = eta.kind === 'eta'
     ? [`About ${clockDay(eta.finish)}`, `Median ${fmtDur(eta.median)} per task, from ${eta.n} merged`,
       eta.needsYou ? `Assumes ${eta.needsYou} held task${eta.needsYou === 1 ? ' is' : 's are'} retried` : null,
@@ -1984,7 +2047,7 @@ function renderOverview() {
       h('span', { class: 'pr-name' }, h('span', { text: 'Plan v' + pl.version }), h('span', { class: 'muted ellipsis', text: summary })),
       segBar(pc), h('span', { class: 'mono t2', text: `${pc.merged} / ${pts.length}` }));
   }).filter(Boolean);
-  const phases = (state.phases || []).filter((x) => x.project_id === p.id).sort((a, b) => a.position - b.position);
+  const phases = activePhases(p.id).sort((a, b) => a.roadmap_id - b.roadmap_id || a.position - b.position);
   const PH = { done: ['Done', 'ok'], running: ['Running', 'live'], drafting: ['Drafting', 'live'], review: ['Review plan', 'wait'], queued: ['Queued', ''], failed: ['Failed', 'bad'] };
   const merged = ts.filter((t) => t.status === 'merged').sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at))).slice(0, 5);
 
@@ -2676,14 +2739,20 @@ $('roadmapEditor').onsubmit = async (e) => {
   const projectId = draftProjectId;
   const text = $('roadmapText').value;
   if (!projectId) return;
-  const r = await post(`/api/projects/${encodeURIComponent(projectId)}/roadmap`, { text });
+  const target = rmTarget;
+  const r = await post(`/api/projects/${encodeURIComponent(projectId)}/roadmap`,
+    target ? { text, roadmapId: target.id } : { text, newRoadmap: true, title: $('roadmapName').value.trim() || undefined });
   if (r) {
-    toast(`${r.length} phase${r.length > 1 ? 's' : ''} added to ${state.projects.find((p) => p.id === projectId)?.name ?? projectId}`);
-    if (clearSubmittedDraft(projectId, 'roadmap', 'roadmapText', text)) $('roadmapEditor').hidden = true;
+    toast(target ? `Phases added to ${target.title}` : 'Roadmap started');
+    if (clearSubmittedDraft(projectId, 'roadmap', 'roadmapText', text)) { $('roadmapEditor').hidden = true; $('roadmapName').value = ''; rmTarget = null; }
     refresh();
   }
 };
-$('roadmapCancel').onclick = () => { $('roadmapEditor').hidden = true; };
+$('roadmapCancel').onclick = () => { $('roadmapEditor').hidden = true; rmTarget = null; };
+$('hintSend').onclick = () => sendRequest(draftProjectId, $('chatIn').value, true);
+$('hintRoadmap').onclick = () => { const text = $('chatIn').value; $('chatRoadmapHint').hidden = true;
+  if (view !== 'plan') go({ view: 'plan' }); openRoadmapEditor(null, text); $('chatIn').value = ''; };
+$('chatIn').addEventListener('input', () => { if (!$('chatRoadmapHint').hidden && !looksLikeRoadmap($('chatIn').value)) $('chatRoadmapHint').hidden = true; });
 $('goAdd').onclick = () => { go({ view: 'projects' }); $('aPath').focus(); };
 let pushing = false;
 async function pushAll() {
@@ -2829,7 +2898,7 @@ function paletteActions() {
     { id: 'pause', label: p.paused ? 'Resume dispatch' : 'Pause dispatch', icon: p.paused ? 'play' : 'pause', run: togglePause },
     draft && { id: 'approve', label: 'Approve plan', icon: 'check', hint: `Plan v${draft.version}`,
       disabled: planValidation(draft).errors.length ? 'Fix the plan errors first' : null, run: () => approvePlan(draft) },
-    { id: 'roadmap', label: 'Add roadmap', icon: 'plus', run: () => { if (view !== 'plan') go({ view: 'plan' }); openRoadmapEditor(); } },
+    { id: 'roadmap', label: 'New roadmap', icon: 'plus', run: () => { if (view !== 'plan') go({ view: 'plan' }); openRoadmapEditor(); } },
     { id: 'auto', label: auto ? 'Turn off auto-approve' : 'Turn on auto-approve', icon: 'check', hint: auto ? 'You approve every plan' : 'Plans within the limits start on their own', run: () => paletteAuto(p, 'config', { autoApprove: !auto }, auto ? 'Auto-approve off' : 'Auto-approve on') },
     p.auto_approve_halted && { id: 'auto-resume', label: 'Resume auto-approve', icon: 'play', hint: p.auto_approve_halted, run: () => paletteAuto(p, 'auto-approve-resume', undefined, 'Auto-approve resumed') },
   ].filter(Boolean);

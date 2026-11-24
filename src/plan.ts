@@ -49,11 +49,12 @@ export function validatePlan(body: PlanBody): PlanValidation {
   return { errors, warnings };
 }
 
-export function draftPlan(db: DB, projectId: string, body: PlanBody): { planId: number; version: number; validation: PlanValidation } {
+/** `lineage`: null for a chat plan, 'roadmap:<id>' for a roadmap phase. See approvePlan. */
+export function draftPlan(db: DB, projectId: string, body: PlanBody, lineage: string | null = null): { planId: number; version: number; validation: PlanValidation } {
   const validation = validatePlan(body);
   return tx(db, () => {
     const v = (db.prepare('SELECT COALESCE(MAX(version),0)+1 AS v FROM plans WHERE project_id=?').get(projectId) as { v: number }).v;
-    const r = db.prepare("INSERT INTO plans(project_id, version, status, body) VALUES (?,?,'draft',?) RETURNING id").get(projectId, v, JSON.stringify(body)) as { id: number };
+    const r = db.prepare("INSERT INTO plans(project_id, version, status, body, lineage) VALUES (?,?,'draft',?,?) RETURNING id").get(projectId, v, JSON.stringify(body), lineage) as { id: number };
     emit(db, { projectId, type: 'plan_drafted', data: { planId: r.id, version: v, validation } });
     return { planId: r.id, version: v, validation };
   });
@@ -70,6 +71,19 @@ export class PlanInFlightError extends Error {
   }
 }
 
+/** Owner-only: throw away a draft nobody will approve. Roadmap drafts are handled from their phase instead. */
+export function discardPlan(db: DB, planId: number): void {
+  tx(db, () => {
+    const plan = db.prepare('SELECT id, project_id, version, status FROM plans WHERE id=?').get(planId) as { id: number; project_id: string; version: number; status: string } | undefined;
+    if (!plan) throw new Error('plan not found');
+    if (plan.status !== 'draft') throw new Error(`plan is ${plan.status}; only a draft can be discarded`);
+    const phase = db.prepare("SELECT title FROM phases WHERE plan_id=? AND status='review'").get(planId) as { title: string } | undefined;
+    if (phase) throw new Error(`this draft belongs to roadmap phase "${phase.title}"; remove that phase in the roadmap instead`);
+    db.prepare("UPDATE plans SET status='superseded' WHERE id=?").run(planId);
+    emit(db, { projectId: plan.project_id, type: 'plan_discarded', data: { planId, version: plan.version } });
+  });
+}
+
 export const SUPERSEDED_HOLD = 'plan superseded while in flight; owner decision needed';
 
 /** In flight: running, waiting on CI or merging — or holding an open PR (any non-terminal status with a pr_number). */
@@ -79,20 +93,23 @@ const IN_FLIGHT_SQL = `(status IN ('running','waiting_ci','merging') OR (pr_numb
  * Owner-only. The orchestrator has no code path to this function, and `force` is only reachable from
  * the owner's authenticated HTTP route (POST /api/plans/:id/approve with `{"force": true}`); the CLI never passes it.
  *
- * Approving a new version supersedes the previous one. If the approved plan still has in-flight work
+ * Approving a new version supersedes the previous approved plan of the same lineage only: chat plans replace
+ * chat plans, and a roadmap's phase plans replace that roadmap's earlier phase plans. Plans of other lineages
+ * keep running; the runner never starts two tasks with overlapping write scopes at the same time. If the approved plan still has in-flight work
  * (running/waiting_ci/merging, or an open PR) approval is refused with PlanInFlightError and nothing changes.
  * With `force: true`, unstarted tasks are cancelled and every in-flight task is held for an owner decision (fail closed).
  */
 export function approvePlan(db: DB, planId: number, opts: { force?: boolean } = {}): void {
   tx(db, () => {
-    const plan = db.prepare('SELECT * FROM plans WHERE id=?').get(planId) as { id: number; project_id: string; version: number; status: string; body: string } | undefined;
+    const plan = db.prepare('SELECT * FROM plans WHERE id=?').get(planId) as { id: number; project_id: string; version: number; status: string; body: string; lineage: string | null } | undefined;
     if (!plan) throw new Error('plan not found');
     if (plan.status !== 'draft') throw new Error(`plan is ${plan.status}`);
     const body = JSON.parse(plan.body) as PlanBody;
     const { errors } = validatePlan(body);
     if (errors.length) throw new Error('plan invalid: ' + errors.join('; '));
 
-    const old = db.prepare("SELECT id, version FROM plans WHERE project_id=? AND status='approved' ORDER BY version").all(plan.project_id) as { id: number; version: number }[];
+    const old = db.prepare("SELECT id, version FROM plans WHERE project_id=? AND status='approved' AND COALESCE(lineage,'')=? ORDER BY version")
+      .all(plan.project_id, plan.lineage ?? '') as { id: number; version: number }[];
     const inFlightQ = db.prepare(`SELECT id, key, title, status, pr_number FROM tasks WHERE plan_id=? AND ${IN_FLIGHT_SQL} ORDER BY id`);
     const inFlight = old.flatMap((o) => (inFlightQ.all(o.id) as unknown as InFlightTask[]).map((t) => ({ ...t, version: o.version })));
     const forced = opts.force === true; // strict: only a real boolean true forces

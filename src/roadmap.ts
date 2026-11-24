@@ -1,4 +1,4 @@
-import { tx, type DB } from './db.js';
+import { adoptLegacyPhases, tx, type DB } from './db.js';
 import { emit } from './events.js';
 import { approvePlan, validatePlan } from './plan.js';
 import type { PlanningService } from './planning.js';
@@ -9,17 +9,29 @@ export type PhaseStatus = 'queued' | 'drafting' | 'review' | 'running' | 'done' 
 export type ApproveMode = 'inherit' | 'off';
 export const APPROVE_MODES: ApproveMode[] = ['inherit', 'off'];
 export interface PhaseRow {
-  id: number; project_id: string; position: number; title: string; prompt: string; status: PhaseStatus; plan_id: number | null; error: string | null;
+  id: number; project_id: string; roadmap_id: number | null; position: number; title: string; prompt: string; status: PhaseStatus; plan_id: number | null; error: string | null;
   approve_mode: ApproveMode;  // 'off' = this phase always waits for the owner
   auto_note: string | null;   // why a phase in review was not auto-approved
   done_note: string | null;   // why a done phase finished without merged work; NULL for a normal finish
 }
 
+export type RoadmapStatus = 'active' | 'done' | 'archived';
+export interface RoadmapRow { id: number; project_id: string; title: string; status: RoadmapStatus; created_at: string; finished_at: string | null }
+/** Roadmaps that may be active (drafting or running phases) in one project at the same time. */
+export const MAX_ACTIVE_ROADMAPS = 3;
+
 const NOTE_CANCELLED = 'tasks cancelled';
 const NOTE_OWNER = 'marked done by owner';
 const OPEN_COUNTS = `SELECT COUNT(*) AS n, SUM(status='merged') AS merged, SUM(status NOT IN ('merged','cancelled')) AS open FROM tasks WHERE plan_id=?`;
 
-const MAX_PHASES = 50;
+const MAX_PHASES = 50; // per roadmap
+const BUSY = `('pending','ready','running','waiting_ci','merging')`;
+/** Busy tasks a roadmap must wait for: its own and chat plans' (never another roadmap's). */
+const BUSY_FOR_ROADMAP = `SELECT COUNT(*) AS n FROM tasks t JOIN plans pl ON pl.id=t.plan_id
+  WHERE t.project_id=? AND t.status IN ${BUSY} AND (pl.lineage IS NULL OR pl.lineage=?)`;
+export const lineageOf = (roadmapId: number) => `roadmap:${roadmapId}`;
+/** 'Phase 1: Data model' → 'Data model'. */
+const stripPhase = (t: string) => t.replace(/^phase\s*\d+\s*[:.\-–]\s*/i, '').trim() || t;
 
 // ---- Auto-approve policy -------------------------------------------------------------------------
 
@@ -150,23 +162,68 @@ export class RoadmapService {
     db.prepare("UPDATE phases SET status='queued', error=NULL WHERE status='drafting'").run();
   }
 
-  phases(projectId: string) { return this.db.prepare('SELECT * FROM phases WHERE project_id=? ORDER BY position, id').all(projectId) as unknown as PhaseRow[]; }
+  phases(projectId: string) { return this.db.prepare('SELECT * FROM phases WHERE project_id=? ORDER BY roadmap_id, position, id').all(projectId) as unknown as PhaseRow[]; }
+  phasesOf(roadmapId: number) { return this.db.prepare('SELECT * FROM phases WHERE roadmap_id=? ORDER BY position, id').all(roadmapId) as unknown as PhaseRow[]; }
+  roadmaps(projectId: string) { return this.db.prepare('SELECT * FROM roadmaps WHERE project_id=? ORDER BY id').all(projectId) as unknown as RoadmapRow[]; }
+  roadmap(id: number) { return this.db.prepare('SELECT * FROM roadmaps WHERE id=?').get(id) as unknown as RoadmapRow | undefined; }
+  /** The newest active roadmap of a project, if any. */
+  private latestActive(projectId: string) {
+    return this.db.prepare("SELECT * FROM roadmaps WHERE project_id=? AND status='active' ORDER BY id DESC LIMIT 1").get(projectId) as unknown as RoadmapRow | undefined;
+  }
+  private activeRoadmap(projectId: string, roadmapId: number | undefined): RoadmapRow {
+    const r = roadmapId === undefined ? this.latestActive(projectId) : this.roadmap(roadmapId);
+    if (!r || r.project_id !== projectId) throw new Error(roadmapId === undefined ? 'no roadmap is running; start a new roadmap first' : 'unknown roadmap');
+    if (r.status !== 'active') throw new Error(`that roadmap is ${r.status}; start a new roadmap instead`);
+    return r;
+  }
+  private createRoadmap(projectId: string, title: string): RoadmapRow {
+    const active = (this.db.prepare("SELECT COUNT(*) AS n FROM roadmaps WHERE project_id=? AND status='active'").get(projectId) as { n: number }).n;
+    if (active >= MAX_ACTIVE_ROADMAPS) throw new Error(`at most ${MAX_ACTIVE_ROADMAPS} roadmaps can run at once in a project; finish or archive one first`);
+    const id = Number(this.db.prepare('INSERT INTO roadmaps(project_id, title) VALUES (?,?)').run(projectId, title.slice(0, 120)).lastInsertRowid);
+    emit(this.db, { projectId, type: 'roadmap_started', data: { roadmap: id, title } });
+    return this.roadmap(id)!;
+  }
   private set(id: number, f: { status?: PhaseStatus; plan_id?: number | null; error?: string | null; auto_note?: string | null; done_note?: string | null }) {
     const keys = Object.keys(f);
     this.db.prepare(`UPDATE phases SET ${keys.map((k) => `${k}=?`).join(', ')}, updated_at=datetime('now') WHERE id=?`).run(...(Object.values(f) as (string | number | null)[]), id);
   }
   private project(id: string) { return this.db.prepare('SELECT * FROM projects WHERE id=?').get(id) as unknown as Project | undefined; }
 
-  add(projectId: string, text: string): PhaseRow[] {
+  /**
+   * Add phases. `newRoadmap` starts a separate roadmap that runs alongside the others; `roadmapId` appends to
+   * that active roadmap. With neither, phases go to the newest active roadmap, or a new one when none is active
+   * (a finished roadmap never gets new phases).
+   */
+  add(projectId: string, text: string, opts: { roadmapId?: number; newRoadmap?: boolean; title?: string } = {}): PhaseRow[] {
     if (!this.project(projectId)) throw new Error(`unknown project ${projectId}`);
     const parsed = parseRoadmap(text);
     if (!parsed.length) throw new Error('no phases found; separate phases with a line containing only ---');
     if (parsed.length > 20) throw new Error('at most 20 phases at a time');
-    const start = (this.db.prepare('SELECT COALESCE(MAX(position),0) AS n FROM phases WHERE project_id=?').get(projectId) as { n: number }).n;
-    const ins = this.db.prepare('INSERT INTO phases(project_id, position, title, prompt) VALUES (?,?,?,?)');
-    parsed.forEach((ph, i) => ins.run(projectId, start + i + 1, ph.title, ph.prompt));
-    emit(this.db, { projectId, type: 'roadmap_updated', data: { added: parsed.length } });
-    return this.phases(projectId);
+    return tx(this.db, () => {
+      const title = (typeof opts.title === 'string' ? opts.title.trim() : '') || stripPhase(parsed[0].title);
+      const r = opts.newRoadmap ? this.createRoadmap(projectId, title)
+        : opts.roadmapId !== undefined ? this.activeRoadmap(projectId, opts.roadmapId)
+        : this.latestActive(projectId) ?? this.createRoadmap(projectId, title);
+      const start = (this.db.prepare('SELECT COALESCE(MAX(position),0) AS n FROM phases WHERE roadmap_id=?').get(r.id) as { n: number }).n;
+      if (start + parsed.length > MAX_PHASES) throw new Error(`a roadmap can have at most ${MAX_PHASES} phases`);
+      const ins = this.db.prepare('INSERT INTO phases(project_id, roadmap_id, position, title, prompt) VALUES (?,?,?,?,?)');
+      parsed.forEach((ph, i) => ins.run(projectId, r.id, start + i + 1, ph.title, ph.prompt));
+      emit(this.db, { projectId, type: 'roadmap_updated', data: { roadmap: r.id, added: parsed.length } });
+      return this.phases(projectId);
+    });
+  }
+
+  /** Owner-only: hide a roadmap. Refused while one of its phases is drafting, waiting for approval or running. */
+  archive(roadmapId: number) {
+    tx(this.db, () => {
+      const r = this.roadmap(roadmapId);
+      if (!r) throw new Error('unknown roadmap');
+      if (r.status === 'archived') return;
+      const live = this.phasesOf(roadmapId).find((ph) => ['drafting', 'review', 'running'].includes(ph.status));
+      if (live) throw new Error(`phase "${live.title}" is ${live.status}; finish it, or remove it while it waits, before archiving`);
+      this.db.prepare("UPDATE roadmaps SET status='archived', finished_at=COALESCE(finished_at, datetime('now')) WHERE id=?").run(roadmapId);
+      emit(this.db, { projectId: r.project_id, type: 'roadmap_archived', data: { roadmap: roadmapId, title: r.title } });
+    });
   }
 
   retry(id: number) {
@@ -197,9 +254,9 @@ export class RoadmapService {
   private get(id: number) { return this.db.prepare('SELECT * FROM phases WHERE id=?').get(id) as unknown as PhaseRow | undefined; }
 
   /** Make positions 1..n contiguous in the current order. */
-  private renumber(projectId: string) {
+  private renumber(roadmapId: number) {
     const upd = this.db.prepare('UPDATE phases SET position=? WHERE id=?');
-    this.phases(projectId).forEach((ph, i) => { if (ph.position !== i + 1) upd.run(i + 1, ph.id); });
+    this.phasesOf(roadmapId).forEach((ph, i) => { if (ph.position !== i + 1) upd.run(i + 1, ph.id); });
   }
 
   /** 1-based position of the last phase that is not 'queued' (0 when every phase is queued). */
@@ -219,19 +276,20 @@ export class RoadmapService {
   }
 
   /** Insert a new queued phase at a 1-based position; it must come after every non-queued phase. */
-  insert(projectId: string, position: number, title: string, prompt: string): PhaseRow[] {
+  insert(projectId: string, position: number, title: string, prompt: string, roadmapId?: number): PhaseRow[] {
     const v = RoadmapService.clean(title, prompt);
     return tx(this.db, () => {
       if (!this.project(projectId)) throw new Error(`unknown project ${projectId}`);
-      const rows = this.phases(projectId);
-      if (rows.length >= MAX_PHASES) throw new Error(`a project can have at most ${MAX_PHASES} phases`);
+      const rm = this.activeRoadmap(projectId, roadmapId);
+      const rows = this.phasesOf(rm.id);
+      if (rows.length >= MAX_PHASES) throw new Error(`a roadmap can have at most ${MAX_PHASES} phases`);
       if (!Number.isInteger(position) || position < 1 || position > rows.length + 1) throw new Error(`position must be a whole number from 1 to ${rows.length + 1}`);
       const locked = this.lastLocked(rows);
       if (position <= locked) throw new Error(`a new phase cannot go ahead of phases that have already started; the earliest position is ${locked + 1}`);
-      this.db.prepare('UPDATE phases SET position=position+1 WHERE project_id=? AND position>=?').run(projectId, position);
-      const r = this.db.prepare('INSERT INTO phases(project_id, position, title, prompt) VALUES (?,?,?,?)').run(projectId, position, v.title, v.prompt);
-      this.renumber(projectId);
-      emit(this.db, { projectId, type: 'roadmap_updated', data: { inserted: Number(r.lastInsertRowid), position, title: v.title } });
+      this.db.prepare('UPDATE phases SET position=position+1 WHERE roadmap_id=? AND position>=?').run(rm.id, position);
+      const r = this.db.prepare('INSERT INTO phases(project_id, roadmap_id, position, title, prompt) VALUES (?,?,?,?,?)').run(projectId, rm.id, position, v.title, v.prompt);
+      this.renumber(rm.id);
+      emit(this.db, { projectId, type: 'roadmap_updated', data: { roadmap: rm.id, inserted: Number(r.lastInsertRowid), position, title: v.title } });
       return this.phases(projectId);
     });
   }
@@ -242,7 +300,7 @@ export class RoadmapService {
       const ph = this.get(id);
       if (!ph) throw new Error('unknown phase');
       if (ph.status !== 'queued') throw new Error(`a ${ph.status} phase is read-only; only queued phases can be moved`);
-      const rows = this.phases(ph.project_id);
+      const rows = this.phasesOf(ph.roadmap_id!);
       const locked = this.lastLocked(rows);
       const from = rows.findIndex((r) => r.id === id) + 1;
       if (from <= locked) throw new Error('this phase sits before a phase that has already started and cannot be moved');
@@ -285,7 +343,9 @@ export class RoadmapService {
         if (plan?.status === 'draft') { this.db.prepare("UPDATE plans SET status='superseded' WHERE id=?").run(ph.plan_id); discarded = ph.plan_id; }
       }
       this.db.prepare('DELETE FROM phases WHERE id=?').run(id);
-      this.renumber(ph.project_id);
+      this.renumber(ph.roadmap_id!);
+      // A roadmap left with no phases is gone too.
+      if (!this.phasesOf(ph.roadmap_id!).length) this.db.prepare('DELETE FROM roadmaps WHERE id=?').run(ph.roadmap_id);
       if (discarded !== null) emit(this.db, { projectId: ph.project_id, type: 'plan_discarded', data: { planId: discarded, phase: id } });
       emit(this.db, { projectId: ph.project_id, type: 'roadmap_updated', data: { removed: id } });
     });
@@ -318,7 +378,8 @@ export class RoadmapService {
 
   /** Advance every project's roadmap by at most one step. Safe to call often. */
   tick() {
-    const pids = (this.db.prepare("SELECT DISTINCT project_id FROM phases WHERE status NOT IN ('done')").all() as { project_id: string }[]).map((r) => r.project_id);
+    adoptLegacyPhases(this.db); // phases written without a roadmap (older code paths) join one
+    const pids = (this.db.prepare("SELECT DISTINCT project_id FROM roadmaps WHERE status='active'").all() as { project_id: string }[]).map((r) => r.project_id);
     for (const pid of pids) this.advance(pid);
   }
 
@@ -350,7 +411,7 @@ export class RoadmapService {
     const earlier = phases.slice(0, phases.indexOf(ph));
     const prev = earlier.at(-1);
     const previousTasks = prev ? (prev.plan_id ? this.db.prepare('SELECT status FROM tasks WHERE plan_id=?').all(prev.plan_id) as { status: string }[] : []) : null;
-    const busyTasks = (this.db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE project_id=? AND status IN ('pending','ready','running','waiting_ci','merging')`).get(p.id) as { n: number }).n;
+    const busyTasks = (this.db.prepare(BUSY_FOR_ROADMAP).get(p.id, lineageOf(ph.roadmap_id!)) as { n: number }).n;
     let body: unknown;
     try { body = JSON.parse(plan.body); } catch { body = null; }
     const d = autoApproveDecision({ project: p, phase: ph, earlier, previousTasks, busyTasks, body });
@@ -369,7 +430,7 @@ export class RoadmapService {
     this.haltIfBroken(p);
     const phases = this.phases(pid);
     for (const ph of phases) {
-      if (ph.status === 'review' && ph.plan_id) this.tryAutoApprove(p, ph, phases);
+      if (ph.status === 'review' && ph.plan_id) this.tryAutoApprove(p, ph, phases.filter((x) => x.roadmap_id === ph.roadmap_id));
       if (ph.status === 'review' && ph.plan_id) {
         const plan = this.db.prepare('SELECT status FROM plans WHERE id=?').get(ph.plan_id) as { status: string } | undefined;
         if (plan?.status === 'approved') { this.set(ph.id, { status: 'running', auto_note: null }); emit(this.db, { projectId: pid, type: 'phase_running', data: { phase: ph.id, title: ph.title } }); }
@@ -386,25 +447,34 @@ export class RoadmapService {
         } else if (plan?.status === 'superseded') this.set(ph.id, { status: 'failed', error: 'its plan was replaced by a newer plan while running' });
       }
     }
-    const now = this.phases(pid);
-    if (p.roadmap_paused) return;
-    if (now.some((ph) => ['drafting', 'review', 'running', 'failed'].includes(ph.status))) return; // one phase at a time; failures stop the roadmap
-    const next = now.find((ph) => ph.status === 'queued');
-    if (!next) return;
-    if (this.planning.list().some((r) => r.projectId === pid)) return; // owner is planning something by hand
-    const busy = (this.db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE project_id=? AND status IN ('pending','ready','running','waiting_ci','merging')`).get(pid) as { n: number }).n;
-    if (busy) return; // let current work finish first
-    const total = now.length, index = now.indexOf(next) + 1;
-    this.set(next.id, { status: 'drafting', error: null });
-    emit(this.db, { projectId: pid, type: 'phase_drafting', data: { phase: next.id, title: next.title } });
-    try {
-      this.planning.start(p, `Roadmap phase ${index} of ${total}: ${next.title}\n\n${next.prompt}`, (o) => {
-        if (o.kind === 'drafted') this.set(next.id, { status: 'review', plan_id: o.planId });
-        else this.set(next.id, { status: 'failed', error: o.kind === 'failed' ? o.error : `planner declined: ${o.reply}`.slice(0, 500) });
-        emit(this.db, { projectId: pid, type: 'roadmap_updated', data: { phase: next.id, outcome: o.kind } });
-      });
-    } catch (e) {
-      this.set(next.id, { status: 'failed', error: String((e as Error).message ?? e) });
+    // Each active roadmap advances on its own. The planner drafts one plan per project at a time, so at most
+    // one roadmap starts drafting per tick; the others follow on later ticks.
+    for (const rm of this.db.prepare("SELECT * FROM roadmaps WHERE project_id=? AND status='active' ORDER BY id").all(pid) as unknown as RoadmapRow[]) {
+      const rows = this.phasesOf(rm.id);
+      if (rows.length && rows.every((ph) => ph.status === 'done')) {
+        this.db.prepare("UPDATE roadmaps SET status='done', finished_at=datetime('now') WHERE id=?").run(rm.id);
+        emit(this.db, { projectId: pid, type: 'roadmap_done', data: { roadmap: rm.id, title: rm.title, phases: rows.length } });
+        continue;
+      }
+      if (p.roadmap_paused) continue;
+      if (rows.some((ph) => ['drafting', 'review', 'running', 'failed'].includes(ph.status))) continue; // one phase at a time per roadmap; failures stop it
+      const next = rows.find((ph) => ph.status === 'queued');
+      if (!next) continue;
+      if (this.planning.list().some((r) => r.projectId === pid)) return; // the planner is busy (by hand or another roadmap)
+      if ((this.db.prepare(BUSY_FOR_ROADMAP).get(pid, lineageOf(rm.id)) as { n: number }).n) continue; // let this roadmap's (and chat) work finish first
+      const total = rows.length, index = rows.indexOf(next) + 1;
+      this.set(next.id, { status: 'drafting', error: null });
+      emit(this.db, { projectId: pid, type: 'phase_drafting', data: { phase: next.id, title: next.title, roadmap: rm.id } });
+      try {
+        this.planning.start(p, `Roadmap phase ${index} of ${total}: ${next.title}\nRoadmap: ${rm.title}\n\n${next.prompt}`, (o) => {
+          if (o.kind === 'drafted') this.set(next.id, { status: 'review', plan_id: o.planId });
+          else this.set(next.id, { status: 'failed', error: o.kind === 'failed' ? o.error : `planner declined: ${o.reply}`.slice(0, 500) });
+          emit(this.db, { projectId: pid, type: 'roadmap_updated', data: { phase: next.id, outcome: o.kind } });
+        }, { lineage: lineageOf(rm.id) });
+      } catch (e) {
+        this.set(next.id, { status: 'failed', error: String((e as Error).message ?? e) });
+      }
+      return;
     }
   }
 }
