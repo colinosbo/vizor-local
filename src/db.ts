@@ -156,7 +156,7 @@ export function openDb(path: string): DB {
     auto_approve: 'INTEGER NOT NULL DEFAULT 0', auto_approve_halted: 'TEXT',
     planner_model: "TEXT NOT NULL DEFAULT 'auto'", worker_model: "TEXT NOT NULL DEFAULT 'auto'", // 'auto' | 'sonnet' | 'opus'
     forge_kind: "TEXT NOT NULL DEFAULT 'local'", github_repo: 'TEXT', github_check: "TEXT NOT NULL DEFAULT 'ci'" }); // 'local' | 'github'
-  ensureColumns(db, 'attempts', { model: 'TEXT' });
+  ensureColumns(db, 'attempts', { model: 'TEXT', security: 'TEXT' }); // security: JSON AttemptSecurity from the post-attempt audit
   ensureColumns(db, 'tasks', { usage_retry_at: 'INTEGER', model: 'TEXT', model_why: 'TEXT' });
   ensureColumns(db, 'phases', { approve_mode: "TEXT NOT NULL DEFAULT 'inherit'", auto_note: 'TEXT', done_note: 'TEXT', roadmap_id: 'INTEGER' });
   // lineage: NULL = a plan drafted from chat; 'roadmap:<id>' = a plan drafted for that roadmap. Approving a plan

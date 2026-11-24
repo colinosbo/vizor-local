@@ -37,6 +37,18 @@ vizor-local serve --orchestrator claude --worker claude                         
 
 Requires Node ≥ 22.13 (uses built-in `node:sqlite`, no native driver) and git.
 
+## Worker isolation
+
+**These measures are defense in depth, not a security boundary.** A worker still runs as your OS user and can read whatever that account can read. The deny rules match what Claude usually types and are easy to get around (another binary, a script the worker writes, an encoded command). For real isolation options (separate OS user, sandboxing, network policy) see [docs/investigations/windows-isolation.md](investigations/windows-isolation.md).
+
+- **Environment allowlist** (`src/isolation/env.ts`). Workers, real and fake, start with a clean environment, not a copy of yours: only OS basics (`PATH`, `TEMP`, `HOME`, `USERPROFILE`, `APPDATA`, …) and the Claude sign-in variables (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `CLAUDE_CONFIG_DIR`). Anything that looks like a credential (`GH_*`, `GITHUB_*`, `AWS_*`, `AZURE_*`, or a name containing `TOKEN`, `SECRET`, `PASSWORD`, `KEY`) is dropped.
+- **Per-attempt settings file** (`src/isolation/settings.ts`). Before each attempt Local writes `<data>/isolation/<attemptId>/settings.json` and starts Claude Code with `--settings <path>`. Its `permissions.deny` rules block `Read`/`Edit` of `~/.ssh`, `~/.aws`, `~/.azure`, `~/.config/gh`, `~/.git-credentials`, Local's own data folder, other worktrees and every other project's folder, plus outbound shell commands (`ssh`, `scp`, `sftp`, `rsync`, `gh`, `git push`, `curl`/`wget`/`Invoke-WebRequest` uploads). The file is never inside the worktree, so the checkout stays clean in git, and it is removed when the attempt ends. If it cannot be written, the attempt still runs without it and a `runner_error` event says why.
+- **Post-attempt audit** (`src/isolation/audit.ts`). When an attempt ends — success, failure or cancel — Local scans that attempt's `worker_output` events for tool calls that touched a denied path or looked like outbound network traffic. This only records; it blocks nothing, and it reads output that was already truncated, so it can miss things. The result is:
+  - stored as JSON in `attempts.security`,
+  - emitted as a `worker_security` event whose data is `{ deniedAttempts, networkCommands, events: [{ tool, command, reason }] }`,
+  - served by `GET /api/state` as `attempts[].security` (that object, or `null` for attempts that have not ended, attempts from older builds, or unreadable data).
+  An audit error never fails the attempt; it is reported as a `runner_error` event.
+
 ## What the demo proves (real git, real CI command, fake workers)
 
 | Plan scenario | Result |

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { buildWorkerEnv } from './isolation/env.js';
 import type { ModelChoice, ModelDefault, TaskRow } from './types.js';
 
 export interface WorkerEvent { kind: 'text' | 'tool' | 'command' | 'result' | 'stderr' | 'system'; text: string }
@@ -16,6 +17,7 @@ export interface WorkerContext {
   resumeSessionId?: string;       // previous session to resume for repairs
   model?: ModelChoice;            // Claude model alias for this attempt
   timeoutMs: number;
+  settingsPath?: string;          // per-attempt Claude Code settings (deny rules); always outside the worktree
 }
 
 export interface WorkerResult { exitCode: number | null; timedOut: boolean; cancelled: boolean; sessionId?: string; error?: string }
@@ -78,17 +80,24 @@ export class ClaudeCodeWorkerFactory implements WorkerFactory {
   name = 'claude-code';
   constructor(private bin = 'claude', private allowedTools = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash(npm test:*)', 'Bash(npm ci:*)', 'Bash(npm run:*)', 'Bash(node --test:*)', 'Bash(node:*)', 'Bash(git status:*)', 'Bash(git diff:*)', 'Skill']) {}
   start(ctx: WorkerContext): WorkerHandle {
-    const args = ['-p', ctx.prompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits',
-      '--allowedTools', ...this.allowedTools];
-    if (ctx.model) args.push('--model', ctx.model);
-    if (ctx.resumeSessionId) args.push('--resume', ctx.resumeSessionId);
-    else args.push('--session-id', ctx.sessionId);
-    // Publisher secrets are stripped from the worker environment.
-    const env = { ...process.env };
-    for (const k of Object.keys(env)) if (/^(GH_|GITHUB_|LOCAL_PUBLISH)/.test(k)) delete env[k];
-    const child = spawn(this.bin, args, { cwd: ctx.worktree, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    // Allowlisted environment, not a copy of process.env: publisher and cloud secrets never reach the worker.
+    const child = spawn(this.bin, buildClaudeArgs(ctx, this.allowedTools), { cwd: ctx.worktree, env: buildWorkerEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
     return supervise(child, ctx.timeoutMs, parseClaudeStreamLine);
   }
+}
+
+/** argv for one Claude Code attempt. Pure, so the flags can be tested without spawning claude. */
+export function buildClaudeArgs(
+  ctx: Pick<WorkerContext, 'prompt' | 'model' | 'resumeSessionId' | 'sessionId' | 'settingsPath'>,
+  allowedTools: readonly string[],
+): string[] {
+  const args = ['-p', ctx.prompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits',
+    '--allowedTools', ...allowedTools];
+  if (ctx.model) args.push('--model', ctx.model);
+  if (ctx.resumeSessionId) args.push('--resume', ctx.resumeSessionId);
+  else args.push('--session-id', ctx.sessionId);
+  if (ctx.settingsPath) args.push('--settings', ctx.settingsPath);
+  return args;
 }
 
 export function parseClaudeStreamLine(line: string): WorkerEvent | null {
@@ -112,7 +121,10 @@ export function parseClaudeStreamLine(line: string): WorkerEvent | null {
 }
 
 /** Scripted edits for deterministic tests and demos. A real child process, so pids/restarts are real. */
-export interface FakeStep { files: Record<string, string | null>; exitCode?: number; sleepMs?: number; say?: string }
+export interface FakeStep {
+  files: Record<string, string | null>; exitCode?: number; sleepMs?: number; say?: string;
+  printEnv?: boolean; // emit the worker's environment variable NAMES as one assistant text line
+}
 export type FakeScenario = Record<string, FakeStep[]>; // task key -> step per attempt number
 
 export class FakeWorkerFactory implements WorkerFactory {
@@ -123,7 +135,7 @@ export class FakeWorkerFactory implements WorkerFactory {
     const steps = this.scenario[ctx.task.key] ?? [];
     const step = steps[Math.min(ctx.attemptNumber, steps.length) - 1] ?? { files: {}, say: 'nothing scripted' };
     const child = spawn(process.execPath, [this.script, JSON.stringify({ ...step, sessionId: ctx.sessionId, kind: ctx.kind })],
-      { cwd: ctx.worktree, stdio: ['ignore', 'pipe', 'pipe'] });
+      { cwd: ctx.worktree, env: buildWorkerEnv(), stdio: ['ignore', 'pipe', 'pipe'] }); // same env a real worker gets
     return supervise(child, ctx.timeoutMs, parseClaudeStreamLine);
   }
 }

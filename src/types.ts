@@ -87,6 +87,7 @@ export interface AttemptRow {
   base_sha: string | null; pid: number | null; exit_code: number | null; reason: string | null;
   ended_at: string | null;
   model?: ModelChoice | null;     // model that ran this attempt; null for attempts from older builds
+  security?: string | null;       // JSON AttemptSecurity from the post-attempt audit; null until the attempt ends
 }
 
 export interface Check {

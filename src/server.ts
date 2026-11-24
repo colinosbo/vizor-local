@@ -17,6 +17,7 @@ import type { RoadmapService } from './roadmap.js';
 import { EMPTY_SETUP, projectSetup } from './setup.js';
 import { clearOverride, overrideFinding, PushBlockedError, pushNow, pushToGithub, setGithubRemote, shipStatus } from './ship.js';
 import { folderStatus, syncCheckout } from './sync.js';
+import type { AttemptSecurity } from './isolation/audit.js';
 import type { Runner } from './runner.js';
 import { INSTALL_ROOT, systemRunner, type UpdateService } from './update.js';
 import { readVersion, type VersionInfo } from './version.js';
@@ -152,7 +153,7 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
             return { ...pl, shape: shapeOfBody(body) };
           }),
           tasks: db.prepare('SELECT * FROM tasks ORDER BY project_id, plan_id, rowid').all(),
-          attempts: db.prepare('SELECT * FROM attempts ORDER BY started_at').all(),
+          attempts: db.prepare('SELECT * FROM attempts ORDER BY started_at').all().map((a) => ({ ...a, security: parseSecurity(a.security) })),
           messages: db.prepare('SELECT * FROM messages ORDER BY id').all(),
           settings: db.prepare('SELECT * FROM settings').all(),
           planning: planning.list(),
@@ -310,3 +311,15 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
 }
 
 function fail(msg: string): never { throw new Error(msg); }
+
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** attempts.security column → AttemptSecurity, or null when empty, not JSON, or not that shape. */
+export function parseSecurity(raw: unknown): AttemptSecurity | null {
+  if (typeof raw !== 'string' || raw === '') return null;
+  let v: unknown;
+  try { v = JSON.parse(raw); } catch { return null; }
+  if (!isObj(v) || typeof v.deniedAttempts !== 'number' || typeof v.networkCommands !== 'number' || !Array.isArray(v.events)) return null;
+  const ok = v.events.every((e) => isObj(e) && typeof e.tool === 'string' && typeof e.command === 'string' && typeof e.reason === 'string');
+  return ok ? (v as unknown as AttemptSecurity) : null;
+}

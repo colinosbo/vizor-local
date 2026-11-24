@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { planCancel } from './cancel.js';
 import type { DB } from './db.js';
 import { getSetting, tx } from './db.js';
@@ -8,6 +8,8 @@ import { HeadMovedError, type Forge, type ForgeProvider } from './forge.js';
 import { allPaths, commitAll, ensureWorktree, hasUncommitted, push, revParse, taskChanges, updateFromBase } from './git.js';
 import { evaluateMerge } from './merge.js';
 import { SUPERSEDED_HOLD } from './plan.js';
+import { auditAttempt } from './isolation/audit.js';
+import { removeAttemptSettings, writeAttemptSettings } from './isolation/settings.js';
 import { inScope, scopesOverlap } from './scope.js';
 import { DEFAULT_CI, IN_FLIGHT, isModelDefault, REQUIRED_CHECK, TRUSTED_WORKFLOW, taskMarker, type AttemptRow, type Check, type Project, type TaskRow } from './types.js';
 import { modelFor, type WorkerFactory, type WorkerHandle } from './workers.js';
@@ -366,6 +368,49 @@ export class Runner {
     const a = this.attempt(attemptId);
     const t = this.task(a.task_id);
     const p = this.project(t.project_id);
+    // Filled in by runAttempt once the settings file exists; read here however the attempt ends.
+    const iso = { deniedPaths: [] as string[] };
+    try {
+      await this.runAttempt(attemptId, a, t, p, iso);
+    } finally {
+      this.recordSecurity(t, attemptId, iso.deniedPaths);
+    }
+  }
+
+  /** Paths denied to the worker by its settings file; [] when none could be written. */
+  private writeIsolation(t: TaskRow, attemptId: string, worktree: string): { settingsPath?: string; deniedPaths: string[] } {
+    try {
+      const others = this.db.prepare('SELECT repo_path FROM projects WHERE id<>?').all(t.project_id) as { repo_path: string }[];
+      const { path, deniedPaths } = writeAttemptSettings({
+        dataDir: dirname(this.o.worktreesDir), attemptId, worktree, otherProjectPaths: others.map((r) => r.repo_path),
+      });
+      return { settingsPath: path, deniedPaths };
+    } catch (e) {
+      // Deny rules are defense in depth; without them the attempt still runs, and the owner sees why.
+      this.ev(t, 'runner_error', { error: 'isolation settings not written: ' + String((e as Error).message ?? e).slice(0, 300) }, attemptId);
+      return { deniedPaths: [] };
+    }
+  }
+
+  /** Post-attempt audit, stored on the attempt and emitted as worker_security. Never throws. */
+  private recordSecurity(t: TaskRow, attemptId: string, deniedPaths: readonly string[]) {
+    try {
+      const rows = this.db.prepare("SELECT type, data FROM events WHERE attempt_id=? AND type='worker_output' ORDER BY seq")
+        .all(attemptId) as { type: string; data: string }[];
+      const events = rows.map((r) => {
+        try { return { type: r.type, data: JSON.parse(r.data) as unknown }; } catch { return { type: r.type, data: null }; }
+      });
+      const security = auditAttempt(events, { deniedPaths });
+      this.db.prepare('UPDATE attempts SET security=? WHERE id=?').run(JSON.stringify(security), attemptId);
+      this.ev(t, 'worker_security', security, attemptId);
+    } catch (e) {
+      this.ev(t, 'runner_error', { error: 'security audit failed: ' + String((e as Error).message ?? e).slice(0, 300) }, attemptId);
+    } finally {
+      removeAttemptSettings(dirname(this.o.worktreesDir), attemptId);
+    }
+  }
+
+  private async runAttempt(attemptId: string, a: AttemptRow, t: TaskRow, p: Project, iso: { deniedPaths: string[] }): Promise<void> {
     try {
       const wt = t.worktree ?? join(this.o.worktreesDir, t.id);
       const { created, baseSha } = ensureWorktree(p.repo_path, wt, t.branch, p.base_branch);
@@ -374,9 +419,12 @@ export class Runner {
       const n = (this.db.prepare('SELECT COUNT(*) AS n FROM attempts WHERE task_id=?').get(t.id) as { n: number }).n;
       const model = modelFor(t, a.kind, isModelDefault(p.worker_model) ? p.worker_model : 'auto');
       this.db.prepare('UPDATE attempts SET model=? WHERE id=?').run(model, attemptId);
+      const { settingsPath, deniedPaths } = this.writeIsolation(t, attemptId, wt);
+      iso.deniedPaths = deniedPaths;
       const handle = this.workers.start({
         model, task: t, attemptId, attemptNumber: n, kind: a.kind, worktree: wt, prompt: buildPrompt(t, a.kind, p.ci_command),
         sessionId: a.session_id!, resumeSessionId: a.kind === 'repair' ? t.last_session_id ?? undefined : undefined, timeoutMs: this.o.timeoutMs,
+        settingsPath,
       });
       this.handles.set(attemptId, handle);
       this.setAttempt(attemptId, { status: 'running', pid: handle.pid });
