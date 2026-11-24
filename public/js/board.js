@@ -185,7 +185,36 @@ function mergedLabel(t) {
   const pr = `PR #${t.pr_number}`;
   return when && Number.isFinite(when.getTime()) ? `${pr} · merged ${ago(when)}` : pr;
 }
+// PR number as a link to GitHub when the project's forge is github and the repo slug is safe; null otherwise (plain number).
+const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+function prUrl(p, n) {
+  const f = p && p.forge;
+  if (!f || f.kind !== 'github' || typeof f.repo !== 'string' || !REPO_RE.test(f.repo)) return null;
+  const parts = f.repo.split('/');
+  if (parts.some((s) => s === '.' || s === '..')) return null;
+  const num = Number(n);
+  if (!Number.isInteger(num) || num <= 0) return null;
+  return `https://github.com/${encodeURIComponent(parts[0])}/${encodeURIComponent(parts[1])}/pull/${num}`;
+}
+function prRef(p, t) {
+  const url = prUrl(p, t.pr_number);
+  if (!url) return h('span', { text: `#${t.pr_number}` });
+  return h('a', { href: url, target: '_blank', rel: 'noopener noreferrer', title: `Open PR #${t.pr_number} on GitHub`, onclick: (e) => e.stopPropagation(), onkeydown: (e) => e.stopPropagation(), text: `#${t.pr_number}` });
+}
+// Review shield for a card with a PR: the review recorded for this exact head SHA, pending when there is none.
+function shieldFor(p, t) {
+  if (!t.pr_number || (p && p.review_gate === 'off')) return null;
+  const review = (state.reviews || []).find((r) => r.task_id === t.id && r.head_sha === t.head_sha);
+  const status = review ? review.status : 'pending';
+  const count = review && Array.isArray(review.findings) ? review.findings.length : 0;
+  const [tone, label] = status === 'passed' ? ['ok', 'Review passed']
+    : status === 'blocked' ? ['bad', `${count} finding${count === 1 ? '' : 's'}`]
+    : status === 'failed' ? ['bad', 'Review failed'] : ['pending', 'Review pending'];
+  const full = status === 'blocked' ? `Security review blocked: ${label}` : label;
+  return h('span', { class: 'shield', 'data-tone': tone, 'aria-label': full, title: full, role: 'note', text: label });
+}
 function taskCard(t) {
+  const p = proj();
   const [, kind] = STATUS[t.status] || [];
   const attempts = state.attempts.filter((a) => a.task_id === t.id);
   const run = attempts.find((a) => a.status === 'running');
@@ -203,7 +232,8 @@ function taskCard(t) {
     h('div', { class: 'meta mono' }, h('span', { class: 'ellipsis', text: t.key }), modelChip(t),
       attempts.length ? h('span', { text: `attempt ${attempts.length}` }) : null,
       t.repair_count > 0 ? h('span', { text: `${t.repair_count} repair${t.repair_count > 1 ? 's' : ''}` }) : null,
-      t.pr_number ? h('span', { text: `#${t.pr_number}` }) : null,
+      t.pr_number ? prRef(p, t) : null,
+      shieldFor(p, t),
       since ? h('span', { class: 'el', 'data-since': String(since), text: fmtClock(Date.now() - since) }) : null,
       t.merge_sha || t.head_sha ? h('span', { text: short(t.merge_sha || t.head_sha) }) : null),
     run ? h('div', { class: 'act mono', 'data-act': t.id, title: activity.get(t.id) || null, text: activity.get(t.id) || '' }) : null,
@@ -227,6 +257,7 @@ function holdSummary(t) {
   }
   const rules = [
     [/^merge held:.*plan_not_approved/, 'Plan not approved', reviewPlan],
+    [/^merge held:.*review_blocked/, 'Security review blocked', openRun],
     [/^merge held/, 'Merge held by a safety check', retryA],
     [/^plan superseded/, 'Plan changed while running', reviewPlan],
     [/^out-of-scope changes not published/, 'Changes outside task scope', reviewPlan],
