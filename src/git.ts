@@ -57,6 +57,11 @@ export function hasUncommitted(wt: string): boolean {
   return git(wt, ['status', '--porcelain']).length > 0;
 }
 
+/** Number of changed tracked files (same view as the folder `dirty` flag: untracked files are not counted). */
+export function countUncommitted(cwd: string): number {
+  return git(cwd, ['status', '--porcelain', '--untracked-files=no'], { allowFail: true }).split('\n').filter((l) => l.trim()).length;
+}
+
 export function commitAll(wt: string, message: string): boolean {
   git(wt, ['add', '-A']);
   if (!git(wt, ['diff', '--cached', '--name-only'])) return false;

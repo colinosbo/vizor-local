@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { fileURLToPath } from 'node:url';
 import type { DB } from './db.js';
 import { setSetting } from './db.js';
+import { countUncommitted } from './git.js';
 import { emit, eventsAfter, subscribe, type EventRow } from './events.js';
 import { planCancel } from './cancel.js';
 import { resolveLocalOrigin } from './forges.js';
@@ -109,9 +110,19 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
             catch (e) { row = { ...p, origin: null, origin_error: String((e as Error).message ?? e) }; }
             let setup = EMPTY_SETUP;
             try { setup = projectSetup(db, row); } catch { /* setup is advisory; never fail /api/state */ }
-            return { ...row, setup };
+            let uncommitted_files = 0;
+            try { uncommitted_files = countUncommitted(p.repo_path); } catch { /* folder missing: nothing to count */ }
+            return { ...row, setup, uncommitted_files };
           }),
-          plans: db.prepare('SELECT id, project_id, version, status, body FROM plans ORDER BY id').all(),
+          // Every plan version, superseded and task-less ones included. plans has no created_at column, so it
+          // comes from the plan_drafted event (null if the event is gone); phase_id is the phase that owns the plan.
+          plans: db.prepare(
+            `SELECT pl.id, pl.project_id, pl.version, pl.status, pl.body, pl.approved_at,
+               (SELECT MIN(e.ts) FROM events e WHERE e.type='plan_drafted' AND e.project_id=pl.project_id
+                  AND json_extract(e.data,'$.planId')=pl.id) AS created_at,
+               (SELECT ph.id FROM phases ph WHERE ph.plan_id=pl.id ORDER BY ph.id LIMIT 1) AS phase_id,
+               (SELECT COUNT(*) FROM tasks t WHERE t.plan_id=pl.id) AS task_count
+             FROM plans pl ORDER BY pl.id`).all(),
           tasks: db.prepare('SELECT * FROM tasks ORDER BY project_id, plan_id, rowid').all(),
           attempts: db.prepare('SELECT * FROM attempts ORDER BY started_at').all(),
           messages: db.prepare('SELECT * FROM messages ORDER BY id').all(),
@@ -134,7 +145,8 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
       if (req.method === 'GET' && parts[0] === 'api' && parts[1] === 'projects' && parts[3] === 'ship') {
         const p = runner.project(parts[2]) ?? fail(`unknown project ${parts[2]}`);
         const ship = await shipStatus(p, { fetch: url.searchParams.get('fetch') !== '0', db });
-        let folder = null; try { folder = folderStatus(p); } catch { /* folder missing */ }
+        let folder: (ReturnType<typeof folderStatus> & { dirtyFiles: number }) | null = null;
+        try { const f = folderStatus(p); folder = { ...f, dirtyFiles: f.dirty ? countUncommitted(p.repo_path) : 0 }; } catch { /* folder missing */ }
         return json(res, 200, { ...ship, folder });
       }
       if (req.method === 'GET' && url.pathname === '/api/update/status') {
