@@ -18,7 +18,8 @@ import { EMPTY_SETUP, projectSetup } from './setup.js';
 import { clearOverride, overrideFinding, PushBlockedError, pushNow, pushToGithub, setGithubRemote, shipStatus } from './ship.js';
 import { folderStatus, syncCheckout } from './sync.js';
 import type { Runner } from './runner.js';
-import type { UpdateService } from './update.js';
+import { INSTALL_ROOT, systemRunner, type UpdateService } from './update.js';
+import { readVersion, type VersionInfo } from './version.js';
 
 const page = fileURLToPath(new URL('../../public/index.html', import.meta.url));
 const jsDir = fileURLToPath(new URL('../../public/js/', import.meta.url));
@@ -29,6 +30,7 @@ export interface ServerOpts {
   originsDir?: string;      // where `add project` may create local forge origins
   roadmap?: RoadmapService;
   update?: UpdateService;   // self-update for Vizor Local; routes answer 404 without it
+  version?: VersionInfo;    // tests inject a fixed value; otherwise read from the install
 }
 
 /** The update source is fixed at launch. Any body that tries to name one is refused outright. */
@@ -59,6 +61,7 @@ function listen(server: Server, port: number): Promise<number> {
  */
 export async function startServer(db: DB, runner: Runner, planning: PlanningService, opts: ServerOpts = {}): Promise<RunningServer> {
   const token = opts.token ?? randomBytes(24).toString('base64url');
+  const version = opts.version ?? await readVersion(INSTALL_ROOT, systemRunner);
   let port = 0;
   const cookieName = () => `local_token_${port}`; // cookies are not port-scoped; one name per instance
   const json = (res: ServerResponse, code: number, body: unknown) => {
@@ -115,6 +118,7 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
       }
       if (req.method === 'GET' && url.pathname === '/api/state') {
         return json(res, 200, {
+          version,
           projects: (db.prepare('SELECT * FROM projects ORDER BY created_at').all() as any[]).map((p) => {
             let row: any;
             try { row = { ...p, origin: resolveLocalOrigin(p), origin_error: null }; }
@@ -167,7 +171,7 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
       }
       if (req.method === 'GET' && url.pathname === '/api/update/status') {
         if (!opts.update) return json(res, 404, { error: 'not found' });
-        return json(res, 200, await opts.update.status());
+        return json(res, 200, { ...(await opts.update.status()), version });
       }
       if (req.method === 'POST' && parts[0] === 'api') {
         const body = await readBody(req);
