@@ -15,6 +15,7 @@ import { CannedOrchestrator, ClaudeOrchestrator, plannerPrompt, type Orchestrato
 import { approvePlan, draftPlan } from '../src/plan.js';
 import { PlanningService } from '../src/planning.js';
 import { addProject, configureProject } from '../src/projects.js';
+import { setReviewGate } from '../src/review/store.js';
 import { buildPrompt, Runner } from '../src/runner.js';
 import { createTargetRepo, DEMO_PLAN, DEMO_SCENARIO } from '../src/sandbox.js';
 import { startServer } from '../src/server.js';
@@ -277,7 +278,9 @@ test('two projects, two forges, two CI commands: both plans merge independently'
   const db = openDb(join(root, 'local.db'));
   const a = createTargetRepo(join(root, 'a')), b = createTargetRepo(join(root, 'b'));
   addProject(db, a.checkout, { name: 'alpha', maxWorkers: 1 });
+  setReviewGate(db, 'alpha', 'report');
   addProject(db, b.checkout, { name: 'beta', maxWorkers: 1, ciCommand: 'npm test' });
+  setReviewGate(db, 'beta', 'report');
   approvePlan(db, draftPlan(db, 'alpha', { summary: '', tasks: [DEMO_PLAN.tasks[0]] }).planId);
   approvePlan(db, draftPlan(db, 'beta', { summary: '', tasks: [DEMO_PLAN.tasks[1]] }).planId); // fails CI once, then repaired
   const forges = new ForgeRegistry(db, data);

@@ -67,7 +67,8 @@ export function addProject(db: DB, repoPath: string, opts: AddProjectOpts = {}):
   git(path, ['fetch', '--quiet', 'origin']);
   if (!revParse(path, `origin/${base}`)) throw new Error(`origin/${base} not found (push ${base} to origin first)`);
 
-  db.prepare('INSERT INTO projects(id, name, repo_path, base_branch, max_workers, ci_command) VALUES (?,?,?,?,?,?)')
+  // New projects get the strictest review gate; rows from before the gate existed keep the migration's 'report'.
+  db.prepare("INSERT INTO projects(id, name, repo_path, base_branch, max_workers, ci_command, review_gate) VALUES (?,?,?,?,?,?,'block')")
     .run(id, name, path, base, opts.maxWorkers ?? 1, opts.ciCommand?.trim() || DEFAULT_CI);
   emit(db, { projectId: id, type: 'project_added', data: { path, remote, base, ci: opts.ciCommand ?? DEFAULT_CI } });
   return db.prepare('SELECT * FROM projects WHERE id=?').get(id) as unknown as Project;

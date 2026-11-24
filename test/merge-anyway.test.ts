@@ -15,6 +15,7 @@ import { CannedOrchestrator } from '../src/orchestrator.js';
 import { approvePlan, draftPlan, SUPERSEDED_HOLD } from '../src/plan.js';
 import { PlanningService } from '../src/planning.js';
 import { addProject } from '../src/projects.js';
+import { setReviewGate } from '../src/review/store.js';
 import { Runner } from '../src/runner.js';
 import { createTargetRepo, DEMO_PLAN, DEMO_SCENARIO } from '../src/sandbox.js';
 import { startServer } from '../src/server.js';
@@ -229,6 +230,7 @@ test('real forge: held task is squash-merged at its exact head and reaches merge
   const forge = new LocalForge(bare, join(root, 'forge.db'));
   try {
     const p = addProject(db, checkout, { maxWorkers: 1, name: 'demo' });
+    setReviewGate(db, p.id, 'report');
     approvePlan(db, draftPlan(db, p.id, { summary: '', tasks: [DEMO_PLAN.tasks[0]] }).planId);
     const scenario = { 'history-ui': [{ ...DEMO_SCENARIO['history-ui'][0], sleepMs: 10 }] };
     const r = new Runner(db, forge, new FakeWorkerFactory(scenario), { worktreesDir: join(root, 'wt') });

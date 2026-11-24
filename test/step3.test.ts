@@ -14,6 +14,7 @@ import { approvePlan, draftPlan } from '../src/plan.js';
 import { PlanningService } from '../src/planning.js';
 import { addProject } from '../src/projects.js';
 import { parseRoadmap, RoadmapService } from '../src/roadmap.js';
+import { setReviewGate } from '../src/review/store.js';
 import { Runner } from '../src/runner.js';
 import { createTargetRepo, DEMO_PLAN, DEMO_SCENARIO } from '../src/sandbox.js';
 import { pushToGithub, setGithubRemote, shipStatus } from '../src/ship.js';
@@ -68,6 +69,7 @@ test('after a merge the runner updates the owner folder', async () => {
   const root = tmp(), db = openDb(join(root, 'l.db'));
   const { checkout } = createTargetRepo(root);
   const p = addProject(db, checkout, { name: 'demo' });
+  setReviewGate(db, p.id, 'report');
   approvePlan(db, draftPlan(db, p.id, { summary: '', tasks: [DEMO_PLAN.tasks[0]] }).planId);
   const forges = new ForgeRegistry(db, join(root, 'data'));
   const r = new Runner(db, forges.get, new FakeWorkerFactory({ 'history-ui': [{ ...DEMO_SCENARIO['history-ui'][0], sleepMs: 10 }] }),
@@ -90,6 +92,7 @@ test('roadmap: drafts phase 1, waits for approval and merge, then drafts phase 2
   const root = tmp(), db = openDb(join(root, 'l.db'));
   const { checkout } = createTargetRepo(root);
   const p = addProject(db, checkout, { name: 'demo', maxWorkers: 2 });
+  setReviewGate(db, p.id, 'report');
   let fail = false;
   const orch: Orchestrator = { async draft(_p, req) {
     if (fail) throw new Error('planner down');

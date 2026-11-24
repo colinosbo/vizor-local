@@ -19,9 +19,23 @@ import { createTargetRepo, DEMO_PLAN, DEMO_SCENARIO } from './sandbox.js';
 import { startServer } from './server.js';
 import { resolveUpstream, runUpdater, systemRunner, UpdateService, workersBusy } from './update.js';
 import { ClaudeCodeWorkerFactory, FakeWorkerFactory } from './workers.js';
+import { FakeReviewerFactory } from './review/fake-reviewer.js';
+import { ClaudeReviewerFactory, type ReviewOutcome, type ReviewRequest } from './review/reviewer.js';
 
 const CONFIG_FLAGS = '[--ci "cmd"] [--workers N] [--forge-origin <bare>] [--forge local|github] [--repo owner/name] [--check name]';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Reviewer paired with the fake worker: the demo's scripted changes are benign, so every review of every task
+ * (including heads after repairs and base updates) reports no findings. Real projects use ClaudeReviewerFactory.
+ */
+class DemoReviewerFactory extends FakeReviewerFactory {
+  constructor() { super({}); }
+  override review(req: ReviewRequest): Promise<ReviewOutcome> {
+    this.scenario[req.taskId] ??= Array.from({ length: 50 }, () => ({ findings: [] }));
+    return super.review(req);
+  }
+}
 const args = process.argv.slice(2);
 const flag = (name: string, def?: string) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : def; };
 const has = (name: string) => args.includes(`--${name}`);
@@ -32,7 +46,8 @@ async function demo() {
   const db = openDb(join(root, 'local.db'));
   const forge = new LocalForge(bare, join(root, 'forge.db'));
   const project = addProject(db, checkout, { maxWorkers: 2, name: 'Demo App' });
-  const runner = new Runner(db, forge, new FakeWorkerFactory(DEMO_SCENARIO), { worktreesDir: join(root, 'worktrees'), repairLimit: 2 });
+  const runner = new Runner(db, forge, new FakeWorkerFactory(DEMO_SCENARIO), { worktreesDir: join(root, 'worktrees'), repairLimit: 2,
+    reviewer: new DemoReviewerFactory() });
   const planning = new PlanningService(db, new CannedOrchestrator(DEMO_PLAN));
   const server = has('serve') ? await startServer(db, runner, planning, { port: Number(flag('port', '4317')) }) : null;
   if (server) console.log('Dashboard: ' + server.url);
@@ -123,9 +138,11 @@ async function serve() {
   const db = appDb();
   if (flag('forge-origin')) console.log('note: --forge-origin is no longer needed (each project uses its own origin); ignoring it.');
   const forges = new ForgeRegistry(db, dir);
-  const workers = flag('worker', 'fake') === 'claude' ? new ClaudeCodeWorkerFactory() : new FakeWorkerFactory(DEMO_SCENARIO);
+  const fakeWorker = flag('worker', 'fake') !== 'claude';
+  const workers = fakeWorker ? new FakeWorkerFactory(DEMO_SCENARIO) : new ClaudeCodeWorkerFactory();
   const orch = flag('orchestrator', 'canned') === 'claude' ? new ClaudeOrchestrator() : new CannedOrchestrator(DEMO_PLAN);
   const runner = new Runner(db, forges.get, workers, { worktreesDir: join(dir, 'worktrees'),
+    reviewer: fakeWorker ? new DemoReviewerFactory() : new ClaudeReviewerFactory(),
     afterMerge: (pid) => { const p = db.prepare('SELECT * FROM projects WHERE id=?').get(pid) as unknown as Project | undefined; if (p) syncCheckout(db, p); } });
   runner.start(500);
   const planning = new PlanningService(db, orch);

@@ -18,6 +18,7 @@ import { EMPTY_SETUP, projectSetup } from './setup.js';
 import { clearOverride, overrideFinding, PushBlockedError, pushNow, pushToGithub, setGithubRemote, shipStatus } from './ship.js';
 import { folderStatus, syncCheckout } from './sync.js';
 import type { AttemptSecurity } from './isolation/audit.js';
+import { latestReview, type ReviewRow } from './review/store.js';
 import type { Runner } from './runner.js';
 import { INSTALL_ROOT, systemRunner, type UpdateService } from './update.js';
 import { readVersion, type VersionInfo } from './version.js';
@@ -33,6 +34,16 @@ export interface ServerOpts {
   update?: UpdateService;   // self-update for Vizor Local; routes answer 404 without it
   version?: VersionInfo;    // tests inject a fixed value; otherwise read from the install
   forges?: Pick<ForgeRegistry, 'forgeStatus'>; // per-project forge health for /api/state
+}
+
+export interface TaskReview { status: ReviewRow['status']; headSha: string; model: string; findings: ReviewRow['findings'] }
+
+/** Latest review of a task for /api/state; null when there is none or it cannot be read. */
+function taskReview(db: DB, taskId: string): TaskReview | null {
+  try {
+    const r = latestReview(db, taskId);
+    return r ? { status: r.status, headSha: r.headSha, model: r.model, findings: r.findings } : null;
+  } catch { return null; } // advisory display data; never fail /api/state
 }
 
 /** The update source is fixed at launch. Any body that tries to name one is refused outright. */
@@ -152,7 +163,7 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
             try { body = JSON.parse(String((pl as { body?: unknown }).body)); } catch { /* malformed body: empty shape */ }
             return { ...pl, shape: shapeOfBody(body) };
           }),
-          tasks: db.prepare('SELECT * FROM tasks ORDER BY project_id, plan_id, rowid').all(),
+          tasks: db.prepare('SELECT * FROM tasks ORDER BY project_id, plan_id, rowid').all().map((t) => ({ ...t, review: taskReview(db, String(t.id)) })),
           attempts: db.prepare('SELECT * FROM attempts ORDER BY started_at').all().map((a) => ({ ...a, security: parseSecurity(a.security) })),
           messages: db.prepare('SELECT * FROM messages ORDER BY id').all(),
           settings: db.prepare('SELECT * FROM settings').all(),
@@ -276,7 +287,7 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
         if (a === 'attempts' && action === 'cancel') { runner.cancel(id); return json(res, 200, { ok: true }); }
         if (a === 'tasks' && action === 'retry') { runner.retry(id); return json(res, 200, { ok: true }); }
         if (a === 'tasks' && action === 'merge-anyway') {
-          // Owner-only route: merges a task held by plan supersession if every other merge check passes.
+          // Owner-only route: merges a task held by plan supersession or by blocking review findings, if every other merge check passes.
           try { return json(res, 200, { ok: true, ...runner.mergeAnyway(id) }); }
           catch (e) { return json(res, 400, { error: String((e as Error).message ?? e) }); }
         }

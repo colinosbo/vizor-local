@@ -11,6 +11,7 @@ import { LocalForge, type Forge } from '../src/forge.js';
 import { evaluateMerge } from '../src/merge.js';
 import { approvePlan, draftPlan, validatePlan } from '../src/plan.js';
 import { addProject, findProjectForPath } from '../src/projects.js';
+import { setReviewGate } from '../src/review/store.js';
 import { Runner } from '../src/runner.js';
 import { createTargetRepo, DEMO_PLAN, DEMO_SCENARIO } from '../src/sandbox.js';
 import { inScope, scopesOverlap } from '../src/scope.js';
@@ -375,6 +376,7 @@ test('local forge: interrupted CI delivery recovers the same PR before starting 
   let db = openDb(dbPath);
   let forge = new LocalForge(bare, forgePath);
   const project = addProject(db, checkout, { maxWorkers: 1, name: 'demo' });
+  setReviewGate(db, project.id, 'report');
   const dependent = task('timer-display', ['src/display/**'], ['rest-timer']);
   approve(db, project.id, { summary: 'Rest timer and display', tasks: [DEMO_PLAN.tasks[1], dependent] });
   const scenario = {

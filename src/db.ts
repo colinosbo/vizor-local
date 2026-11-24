@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { migrateReviews } from './review/store.js';
 
 export type DB = DatabaseSync;
 
@@ -163,6 +164,7 @@ export function openDb(path: string): DB {
   // supersedes only earlier plans of the same lineage, so a chat plan and several roadmaps can run side by side.
   ensureColumns(db, 'plans', { lineage: 'TEXT' });
   adoptLegacyPhases(db);
+  migrateReviews(db);
   return db;
 }
 
