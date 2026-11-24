@@ -184,7 +184,7 @@ test('eligible held task: override event, SHA-guarded merge, then merged by the 
   assert.equal(t.status, 'merging');
   assert.equal(t.merge_sha, 'm1');
   const [ev] = overrideEvents(s.db);
-  assert.deepEqual(JSON.parse(ev.data), { taskId: ID, planId: t.plan_id, headSha: HEAD, prNumber: 1 });
+  assert.deepEqual(JSON.parse(ev.data), { taskId: ID, planId: t.plan_id, headSha: HEAD, prNumber: 1, holdCode: 'plan_not_approved' });
   assert.equal(s.r.handleCheck(ID, green('m1', 50)), 'handled');
   assert.equal(s.r.task(ID).status, 'merged');
 });

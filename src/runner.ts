@@ -17,7 +17,7 @@ import { claudeUsageRetryAt } from './usage-limit.js';
 import { prDiff } from './review/diff.js';
 import { FakeReviewerFactory } from './review/fake-reviewer.js';
 import { ClaudeReviewerFactory, type Finding, type ReviewerFactory, type ReviewOutcome } from './review/reviewer.js';
-import { getReview, getReviewGate, putReview } from './review/store.js';
+import { getReview, getReviewGate, putReview, type ReviewFinding } from './review/store.js';
 
 export interface RunnerOpts {
   worktreesDir: string;
@@ -37,6 +37,13 @@ const ACTIVE_ATTEMPT = "('claimed','running','exited')";
 
 /** Hold reason prefix for a review with critical/high findings; "Merge anyway" accepts tasks held with it. */
 export const REVIEW_BLOCKED_HOLD = 'merge held: review_blocked';
+/**
+ * True when the merge hold's (single) code is review_blocked. evaluateMerge stops at the first hold, so a
+ * "merge held:" reason names one code; we match it as the leading token rather than a substring, so a
+ * review_pending/review_failed/other hold whose detail text mentions "review_blocked" is not accepted.
+ */
+const isReviewBlockedHold = (reason: string | null): boolean =>
+  !!reason && reason.startsWith(REVIEW_BLOCKED_HOLD) && /^(?:$|[ (;])/.test(reason.slice(REVIEW_BLOCKED_HOLD.length));
 const REVIEW_FAILED_HOLD = 'merge held: review_failed';
 /** Hold reason prefix for a review paused by a Claude usage limit; released back to waiting_ci, not ready. */
 export const REVIEW_USAGE_HOLD = 'Claude usage limit; the security review retries automatically after reset';
@@ -692,16 +699,25 @@ export class Runner {
   }
 
   /**
-   * Owner-only "Merge anyway" for a task held because its plan was superseded while it was in flight, or
-   * because its security review reported critical/high findings. merge.ts relaxes only plan_not_approved (for
-   * the supersession hold) and review_blocked; every other merge check must pass, and a missing, pending or
-   * failed review still refuses. A stale branch is refused (no controlled base update here).
-   * Refusals throw and change nothing.
+   * Owner-only "Merge anyway". Accepts exactly two held states and refuses everything else:
+   * - status 'blocked' with hold_reason === SUPERSEDED_HOLD (plan superseded while in flight): merge.ts relaxes
+   *   plan_not_approved for this case only;
+   * - status 'blocked' with a "merge held: review_blocked …" reason (block gate, critical/high findings on the
+   *   exact head SHA): merge.ts relaxes review_blocked and returns the accepted findings.
+   * merge.ts is re-run with ownerOverride; it never relaxes review_pending or review_failed (a missing,
+   * unfinished, failed or other-SHA review still refuses), and every other check must pass. A stale branch
+   * is refused (no controlled base update here). Refusals throw and change nothing.
+   * The owner_override_merge event records which hold was overridden and a summary of any overridden findings
+   * (severity/file/line/title only; the full evidence already lives in the reviews table).
    */
-  mergeAnyway(taskId: string): { mergeSha: string } {
+  mergeAnyway(taskId: string): { mergeSha: string; overriddenFindings?: ReviewFinding[] } {
     const t = this.task(taskId);
     if (!t) throw new Error(`unknown task ${taskId}`);
-    if (t.status !== 'blocked' || !(t.hold_reason === SUPERSEDED_HOLD || t.hold_reason?.startsWith(REVIEW_BLOCKED_HOLD))) {
+    const holdCode = t.status !== 'blocked' ? null
+      : t.hold_reason === SUPERSEDED_HOLD ? 'plan_not_approved' as const
+      : isReviewBlockedHold(t.hold_reason) ? 'review_blocked' as const
+      : null;
+    if (!holdCode) {
       throw new Error(`Merge anyway only applies to a task held with "${SUPERSEDED_HOLD}" or "${REVIEW_BLOCKED_HOLD}"; task is ${t.status}${t.hold_reason ? ` (${t.hold_reason})` : ''}`);
     }
     const forge = this.f(t.project_id);
@@ -709,13 +725,17 @@ export class Runner {
     if (!d.eligible) {
       throw new Error('Merge anyway refused: ' + d.holds.map((h) => `${h.code} (${h.detail})`).join('; '));
     }
-    if (d.overriddenFindings?.length) {
+    const overridden = d.overriddenFindings?.length ? d.overriddenFindings : undefined;
+    if (overridden) {
       this.ev(t, 'review_findings_overridden', { headSha: d.headSha, prNumber: t.pr_number,
-        findings: d.overriddenFindings.map((f) => `${f.severity} ${f.file}:${f.line} ${f.title}`) });
+        findings: overridden.map((f) => `${f.severity} ${f.file}:${f.line} ${f.title}`) });
     }
-    this.ev(t, 'owner_override_merge', { taskId: t.id, planId: t.plan_id, headSha: d.headSha, prNumber: t.pr_number });
+    this.ev(t, 'owner_override_merge', { taskId: t.id, planId: t.plan_id, headSha: d.headSha, prNumber: t.pr_number, holdCode,
+      ...(overridden ? { overriddenFindings: { count: overridden.length,
+        items: overridden.map(({ severity, file, line, title }) => ({ severity, file, line, title })) } } : {}) });
     try {
-      return { mergeSha: this.squashMerge(t, forge, d.headSha!) };
+      const mergeSha = this.squashMerge(t, forge, d.headSha!);
+      return overridden ? { mergeSha, overriddenFindings: overridden } : { mergeSha };
     } catch (e) {
       // The head moved (or the forge refused) between evaluation and merge: fail closed, task stays held.
       this.ev(t, 'owner_override_merge_failed', { error: String((e as Error).message ?? e).slice(0, 300), headMoved: e instanceof HeadMovedError });
