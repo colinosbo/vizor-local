@@ -71,10 +71,12 @@ test('fuzzy search is a scored subsequence match', () => {
   assert.ok(m, 'fuzzy() exists');
   const fuzzy = new Function(`${m[0]}; return fuzzy;`)() as (q: string, t: string) => { score: number; hits: number[] } | null;
   assert.strictEqual(fuzzy('xyz', 'Retry task'), null);
-  assert.deepStrictEqual(fuzzy('rt', 'Retry task')?.hits, [0, 2]);
-  // Contiguous runs and word starts beat scattered matches.
-  assert.ok(fuzzy('push', 'Push to GitHub')!.score > fuzzy('push', 'Pause dispatch hush')!.score);
-  assert.ok(fuzzy('ar', 'Add roadmap')!.score > fuzzy('ar', 'Overview chart')!.score);
+  assert.deepStrictEqual(fuzzy('rt', 'Retry task')?.hits, [0, 6]);
+  // Contiguous runs and word starts match; scattered letters no longer do.
+  assert.ok(fuzzy('push', 'Push to GitHub'));
+  assert.strictEqual(fuzzy('push', 'Pause dispatch hush'), null);
+  assert.ok(fuzzy('ar', 'Add roadmap'));
+  assert.strictEqual(fuzzy('ar', 'Overview chart'), null);
 });
 
 test('keycaps render for Ctrl+K and the BOARD_KEYS shortcuts', () => {
