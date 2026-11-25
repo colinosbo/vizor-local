@@ -10,7 +10,21 @@ import {
 
 // ----- Merge anyway: owner-only, only for tasks held by plan supersession; nothing is posted until the owner confirms -----
 const SUPERSEDED_HOLD = 'plan superseded while in flight; owner decision needed';
-const canMergeAnyway = (t) => !!t && t.status === 'blocked' && t.hold_reason === SUPERSEDED_HOLD;
+const REVIEW_BLOCKED_HOLD = /^merge held:.*review_blocked/;
+const isReviewBlocked = (t) => !!t && t.status === 'blocked' && REVIEW_BLOCKED_HOLD.test(t.hold_reason || '');
+const canMergeAnyway = (t) => !!t && t.status === 'blocked' && (t.hold_reason === SUPERSEDED_HOLD || isReviewBlocked(t));
+// Newest review row of a task; rows arrive oldest first, so a later row wins a created_at tie.
+function latestReview(taskId) {
+  let best = null;
+  for (const r of state.reviews || []) if (r.task_id === taskId && (!best || String(r.created_at) >= String(best.created_at))) best = r;
+  return best;
+}
+// The critical and high findings of the review for the task's current head: what Merge anyway overrides.
+function overriddenFor(t) {
+  const rows = (state.reviews || []).filter((r) => r.task_id === t.id && r.head_sha === t.head_sha);
+  const r = rows.reduce((b, x) => (!b || String(x.created_at) >= String(b.created_at) ? x : b), null);
+  return (r?.findings || []).filter((f) => f.severity === 'critical' || f.severity === 'high');
+}
 let mergeAnyway = null; // { taskId, busy, error }
 function openMergeAnyway(t) {
   mergeAnyway = { taskId: t.id, busy: false, error: null };
@@ -27,9 +41,11 @@ function mergeAnywayPanel(t, st) {
     st.busy = true; st.error = null; renderRun();
     const ok = await post(`/api/tasks/${encodeURIComponent(t.id)}/merge-anyway`, {}, (m) => { st.error = m; });
     st.busy = false;
-    if (ok) { mergeAnyway = null; toast(`Merged ${t.key} at ${short(ok.mergeSha)}`); refresh(); }
+    const n = ok?.overriddenFindings?.length ?? 0, over = n ? `, overrode ${n} finding${n === 1 ? '' : 's'}` : '';
+    if (ok) { mergeAnyway = null; toast(`Merged ${t.key} at ${short(ok.mergeSha)}${over}`); refresh(); }
     else renderRun();
   };
+  const reviewHold = isReviewBlocked(t), over = reviewHold ? overriddenFor(t) : [];
   const checks = [
     'The pull request is still open',
     t.head_sha ? `The required check is green on this exact head, ${short(t.head_sha)}` : 'The required check is green on this exact head commit',
@@ -42,8 +58,13 @@ function mergeAnywayPanel(t, st) {
       else if (e.key === 'Enter' && !e.target.hasAttribute('data-confirm')) { e.preventDefault(); e.stopPropagation(); closeMergeAnyway(); }
     } },
     h('h2', { id: 'maTitle', text: `Merge ${t.key} anyway` }),
-    h('p', { id: 'maBody', text: 'The plan changed while this task was running. Merging anyway skips only the plan-approval check. Local still checks that' }),
+    h('p', { id: 'maBody', text: reviewHold
+      ? 'The security review blocked this merge. Merging anyway overrides the findings below and skips only the review gate. Local still checks that'
+      : 'The plan changed while this task was running. Merging anyway skips only the plan-approval check. Local still checks that' }),
     h('ul', {}, checks.map((c) => h('li', {}, h('span', { class: 'grow', text: c })))),
+    reviewHold ? h('div', { 'data-override-findings': '' },
+      h('p', { text: over.length ? `Findings this merge overrides (${over.length})` : 'No critical or high findings are recorded for this head' }),
+      over.map(findingEl)) : null,
     st.error ? h('p', { class: 'note-bad', role: 'alert', 'data-merge-error': '', text: st.error }) : null,
     h('div', { class: 'acts' },
       h('button', { class: 'btn primary', 'data-default': '', onclick: closeMergeAnyway }, 'Cancel'),
@@ -195,6 +216,39 @@ function durText(a) {
   const sec = Math.max(0, Math.floor((e - s) / 1000)), hrs = Math.floor(sec / 3600);
   return (a.ended_at ? '' : 'running ') + (hrs ? `${hrs}:${String(Math.floor(sec / 60) % 60).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}` : fmtClock(sec * 1000));
 }
+// Review and security output is untrusted text: h() props and kids only.
+const MONO_BLOCK = 'white-space:pre-wrap; overflow-wrap:anywhere; margin:4px 0; padding:8px 12px; border:1px solid var(--line); border-radius:8px; background:var(--raised)';
+function findingEl(f) {
+  return h('div', { class: 'finding', style: 'display:flex; flex-direction:column; gap:4px; padding:12px 0; border-top:1px solid var(--line)' },
+    h('div', { style: 'display:flex; align-items:center; gap:8px; flex-wrap:wrap' },
+      h('span', { class: 'sev mono', 'data-sev': f.severity, style: 'padding:0 8px; border-radius:6px; background:var(--raised-2)', text: f.severity }),
+      h('span', { class: 'mono t2', text: `${f.file}:${f.line}` }),
+      h('span', { text: f.title })),
+    f.evidence ? h('pre', { class: 'mono-block mono', style: MONO_BLOCK, text: f.evidence }) : null,
+    f.fix ? h('p', { class: 't2', style: 'margin:0', text: `Fix: ${f.fix}` }) : null);
+}
+function reviewSection(t) {
+  const r = latestReview(t.id);
+  if (!r) return h('section', { 'data-review': '' }, h('h2', { text: 'Review' }), emptyState(null, 'No security review has run for this task'));
+  const fs = r.findings || [];
+  return h('section', { 'data-review': '' }, h('h2', { text: 'Review' }),
+    h('div', { class: 'facts' }, h('span', { class: 'mono', text: r.status }), h('span', { class: 'mono t2', text: r.model || 'default' }),
+      h('span', { class: 't2', 'data-review-head': '', text: r.head_sha === t.head_sha ? `Matches the current head ${short(r.head_sha)}` : `Reviewed ${short(r.head_sha)}, not the current head` })),
+    fs.length ? fs.map(findingEl) : h('p', { class: 'muted', text: 'The review recorded no findings' }));
+}
+function securitySection(t, atts) {
+  return h('section', { 'data-security': '' }, h('h2', { text: 'Security' }),
+    atts.length ? atts.map((a, i) => {
+      const s = a.security, label = `${i + 1} · ${a.kind}`;
+      if (!s) return h('div', { class: 'facts' }, h('span', { class: 'mono', text: label }), h('span', { class: 'muted', text: 'The audit is not available for this attempt' }));
+      const evs = s.events || [];
+      return h('div', { style: 'display:flex; flex-direction:column; gap:4px; padding:8px 0' },
+        h('div', { class: 'facts' }, h('span', { class: 'mono', text: label }),
+          h('span', { class: 'mono t2', text: `${s.deniedAttempts} denied` }), h('span', { class: 'mono t2', text: `${s.networkCommands} network commands` })),
+        evs.map((e) => h('div', {}, h('pre', { class: 'mono-block mono', style: MONO_BLOCK, text: e.command }),
+          h('span', { class: 't2', text: `${e.tool}: ${e.reason}` }))));
+    }) : h('p', { class: 'muted', text: 'No attempts to audit yet' }));
+}
 function renderRun() {
   const p = proj();
   const tasks = tasksOf(p.id).filter((t) => t.status !== 'cancelled' || t.id === selTask)
@@ -239,6 +293,7 @@ function renderRun() {
         h('td', { class: 'mono t2', text: a.model || t.model || 'default' }),
         h('td', { class: 't2 why', text: ['failed', 'uncertain'].includes(a.status) || t.status === 'blocked' ? (a.reason || '') : '' }),
         h('td', { class: 'mono' }, t.pr_number ? (prUrl(p, t) ? h('a', { href: prUrl(p, t), target: '_blank', rel: 'noopener noreferrer', text: `#${t.pr_number}` }) : `#${t.pr_number}`) : '–')))))) : null,
+    reviewSection(t), securitySection(t, atts),
     h('h2', { text: 'Activity log' }), log,
     disclosure('run:' + t.id, 'Git details', null,
       h('div', { class: 'facts mono' }, h('span', {}, t.branch, copyBtn(t.branch, 'branch name')),

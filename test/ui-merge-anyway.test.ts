@@ -12,7 +12,7 @@ test('the UI hold reason is exactly the one the server writes', () => {
 });
 
 test('the action is gated on status blocked and the exact hold reason', () => {
-  assert.match(html, /const canMergeAnyway = \(t\) => !!t && t\.status === 'blocked' && t\.hold_reason === SUPERSEDED_HOLD;/);
+  assert.match(html, /const canMergeAnyway = \(t\) => !!t && t\.status === 'blocked' && \(t\.hold_reason === SUPERSEDED_HOLD \|\| isReviewBlocked\(t\)\);/);
   // Every place that renders the action sits behind that gate, never a prefix or regex match on the reason.
   const uses = html.match(/canMergeAnyway\(t\) /g) || [];
   assert.ok(uses.length >= 3, 'run button, run panel and board card are gated');
