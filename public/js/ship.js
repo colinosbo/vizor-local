@@ -86,8 +86,13 @@ function renderShip() {
     h('p', { class: 'status' }, lamp(f && f.branch === p.base_branch && !f.behind && !f.dirty && !f.ahead ? 'ok' : f ? 'wait' : ''), folderLine));
 
   // GitHub card
+  // A github-forge project merges straight onto GitHub: no push, confirm step, guard panel or commit list applies.
+  const trusted = p.forge?.kind === 'github';
   let gh;
-  if (!d) gh = h('p', { class: c.error ? 'note-bad' : 'muted', text: c.error || 'Checking GitHub' });
+  if (trusted) {
+    gh = h('p', { class: 'status', 'data-ship-trusted': '' }, lamp('ok'),
+      h('span', {}, 'Your merges already land on GitHub in ', h('span', { class: 'mono', text: p.forge.repo || 'your repo' }), ', so there is nothing to push'));
+  } else if (!d) gh = h('p', { class: c.error ? 'note-bad' : 'muted', text: c.error || 'Checking GitHub' });
   else if (!d.remote) {
     const input = h('input', { type: 'text', class: 'mono', placeholder: 'https://github.com/you/repo.git', 'aria-label': 'GitHub repo URL', spellcheck: 'false' });
     gh = [emptyState('No GitHub repo connected', 'Pushing needs a repo; create an empty one on github.com and paste its URL below'),
@@ -141,6 +146,7 @@ function renderShip() {
 let pushing = false;
 async function pushAll() {
   const p = proj(); if (!p || pushing) return;
+  if (p.forge?.kind === 'github') { toast('Nothing to push: merges already land on GitHub'); return; }
   pushing = true;
   try {
     const r = await post(`/api/projects/${p.id}/push-now`, null, (m, j) => { if (j?.findings) pushBlocked(p.id, j); else toast(m, true); });
