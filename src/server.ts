@@ -18,7 +18,8 @@ import { EMPTY_SETUP, projectSetup } from './setup.js';
 import { clearOverride, overrideFinding, PushBlockedError, pushNow, pushToGithub, setGithubRemote, shipStatus } from './ship.js';
 import { folderStatus, syncCheckout } from './sync.js';
 import type { AttemptSecurity } from './isolation/audit.js';
-import { latestReview, type ReviewRow } from './review/store.js';
+import { isReviewGate, latestReview, setReviewGate, type ReviewRow } from './review/store.js';
+import { reviewsForState, type StateReview } from './review/state.js';
 import type { Runner } from './runner.js';
 import { INSTALL_ROOT, systemRunner, type UpdateService } from './update.js';
 import { readVersion, type VersionInfo } from './version.js';
@@ -44,6 +45,11 @@ function taskReview(db: DB, taskId: string): TaskReview | null {
     const r = latestReview(db, taskId);
     return r ? { status: r.status, headSha: r.headSha, model: r.model, findings: r.findings } : null;
   } catch { return null; } // advisory display data; never fail /api/state
+}
+
+/** All stored reviews for /api/state; [] when they cannot be read. */
+function safeReviews(db: DB): StateReview[] {
+  try { return reviewsForState(db); } catch { return []; } // advisory display data; never fail /api/state
 }
 
 /** The update source is fixed at launch. Any body that tries to name one is refused outright. */
@@ -163,6 +169,7 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
             try { body = JSON.parse(String((pl as { body?: unknown }).body)); } catch { /* malformed body: empty shape */ }
             return { ...pl, shape: shapeOfBody(body) };
           }),
+          reviews: safeReviews(db),
           tasks: db.prepare('SELECT * FROM tasks ORDER BY project_id, plan_id, rowid').all().map((t) => ({ ...t, review: taskReview(db, String(t.id)) })),
           attempts: db.prepare('SELECT * FROM attempts ORDER BY started_at').all().map((a) => ({ ...a, security: parseSecurity(a.security) })),
           messages: db.prepare('SELECT * FROM messages ORDER BY id').all(),
@@ -245,9 +252,16 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
           for (const field of ['planner_model', 'worker_model'] as const) {
             if (body[field] !== undefined && !isModelDefault(body[field])) return json(res, 400, { error: MODEL_DEFAULT_ERROR(field) });
           }
-          return json(res, 200, configureProject(db, id, { ciCommand: body.ciCommand !== undefined ? String(body.ciCommand) : undefined,
-            maxWorkers: body.maxWorkers !== undefined ? Number(body.maxWorkers) : undefined, autoPush: body.autoPush !== undefined ? !!body.autoPush : undefined,
-            autoApprove: body.autoApprove, plannerModel: body.planner_model, workerModel: body.worker_model }));
+          if (body.reviewGate !== undefined && !isReviewGate(body.reviewGate)) return json(res, 400, { error: 'reviewGate must be off, report or block' });
+          let project: Project;
+          try {
+            project = configureProject(db, id, { ciCommand: body.ciCommand !== undefined ? String(body.ciCommand) : undefined,
+              maxWorkers: body.maxWorkers !== undefined ? Number(body.maxWorkers) : undefined, autoPush: body.autoPush !== undefined ? !!body.autoPush : undefined,
+              autoApprove: body.autoApprove, plannerModel: body.planner_model, workerModel: body.worker_model,
+              forgeKind: body.forgeKind, githubRepo: body.githubRepo, githubCheck: body.githubCheck });
+          } catch (e) { return json(res, 400, { error: String((e as Error).message ?? e) }); }
+          if (body.reviewGate !== undefined) setReviewGate(db, id, body.reviewGate);
+          return json(res, 200, project);
         }
         if (a === 'projects' && action === 'auto-approve-resume') { (opts.roadmap ?? fail('roadmap not enabled')).resumeAutoApprove(id); return json(res, 200, { ok: true }); }
         if (a === 'phases' && action === 'approve-mode') return json(res, 200, (opts.roadmap ?? fail('roadmap not enabled')).setApproveMode(Number(id), body.mode));
