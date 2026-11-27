@@ -42,7 +42,7 @@ export function executionRemote(p: Pick<Project, 'repo_path' | 'forge_kind' | 'g
   if (p.forge_kind === 'github') {
     if (!p.github_repo) throw new Error('GitHub repository is not configured');
     const origin = git(p.repo_path, ['config', '--get', 'remote.origin.url'], { allowFail: true });
-    if (githubRepoFromRemote(origin)?.toLowerCase() === p.github_repo.toLowerCase()) return 'origin';
+    if (githubRepoFromRemote(origin)?.toLowerCase() === p.github_repo.toLowerCase()) return origin;
     return 'https://github.com/' + p.github_repo + '.git';
   }
   return p.forge_origin ? resolve(p.repo_path, p.forge_origin) : 'origin';

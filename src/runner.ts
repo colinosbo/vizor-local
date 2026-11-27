@@ -5,7 +5,7 @@ import type { DB } from './db.js';
 import { getSetting, tx } from './db.js';
 import { emit } from './events.js';
 import { HeadMovedError, type Forge, type ForgeProvider } from './forge.js';
-import { allPaths, commitAll, ensureWorktree, executionRemote, fetchBase, git, hasUncommitted, push, revParse, taskChanges, updateFromBase } from './git.js';
+import { allPaths, commitAll, ensureWorktree, executionRemote, fetchBase, git, hasUncommitted, parseNameStatus, push, revParse, taskChanges, updateFromBase } from './git.js';
 import { evaluateMerge } from './merge.js';
 import { SUPERSEDED_HOLD } from './plan.js';
 import { auditAttempt } from './isolation/audit.js';
@@ -232,7 +232,10 @@ export class Runner {
         }
       } catch (e) {
         this.nextPoll.set(t.id, now + 15_000);
-        this.waitForCheck(t, 'forge unavailable while checking: ' + errText(e), now);
+        const error = errText(e);
+        const reason = 'forge unavailable while checking: ' + error;
+        if (this.task(t.id).hold_reason !== reason) this.ev(t, 'runner_error', { error, stage: 'checks' });
+        this.waitForCheck(t, reason, now);
       }
     }
   }
@@ -493,7 +496,14 @@ export class Runner {
     const remote = executionRemote(p);
     ensureWorktree(p.repo_path, wt, t.branch, p.base_branch, remote);
     const r = updateFromBase(wt, p.base_branch, remote);
-    if (!r.ok) return this.block(t, `conflict with ${p.base_branch} in ${r.conflicts.join(', ')}; resolution may need out-of-scope edits`);
+    if (!r.ok) {
+      this.setTask(t.id, { worktree: wt });
+      const scope = JSON.parse(t.write_scope) as string[];
+      const outsideScope = r.conflicts.some((file) => !inScope(file, scope));
+      return this.block(t, `conflict with ${p.base_branch} in ${r.conflicts.join(', ')}; ` + (outsideScope
+        ? 'resolution overlaps files outside the task scope; revise the plan'
+        : 'merge the current base in the task worktree, commit the scoped resolution, then Retry'));
+    }
     const out = allPaths(taskChanges(wt, p.base_branch, remote)).filter((f) => !inScope(f, JSON.parse(t.write_scope)));
     if (out.length) return this.block(t, `update produced out-of-scope changes: ${out.join(', ')}`);
     const head = revParse(wt, 'HEAD')!;
@@ -867,6 +877,25 @@ export class Runner {
     this.ev(t, 'merge_followup_verification', { mergeSha: t.merge_sha, sha });
   }
 
+  private retryResolvedConflict(t: TaskRow) {
+    const wt = t.worktree;
+    if (!wt || hasUncommitted(wt)) throw new Error('Commit the conflict resolution in the task worktree before retrying');
+    const p = this.project(t.project_id);
+    const base = fetchBase(wt, p.base_branch, executionRemote(p));
+    const head = revParse(wt, 'HEAD');
+    const branch = git(wt, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    if (!head || branch !== t.branch || git(wt, ['merge-base', head, base]) !== base ||
+        git(wt, ['merge-base', head, t.head_sha!]) !== t.head_sha) {
+      throw new Error('The task branch must contain the current base and the original PR head');
+    }
+    const files = allPaths(parseNameStatus(git(wt, ['diff', '--name-status', '-M', base, head, '--'])));
+    const outside = files.filter((file) => !inScope(file, JSON.parse(t.write_scope)));
+    if (outside.length) throw new Error('Resolution changes files outside the approved scope: ' + outside.join(', '));
+    if (!files.length) throw new Error('The resolved branch has no changes to publish');
+    this.setTask(t.id, { status: 'waiting_ci', pending_update_sha: head, hold_reason: null, check_wait_since: null });
+    this.ev(t, 'task_retry_requested', { stage: 'conflict_resolution', sha: head });
+  }
+
   retry(taskId: string) {
     const t = this.task(taskId);
     if (t.status !== 'blocked') throw new Error(`task is ${t.status}, not blocked`);
@@ -893,6 +922,10 @@ export class Runner {
       return;
     }
     if (t.pr_number && t.merge_intent_sha && this.adoptMergedPr(t, this.f(t.project_id))) return;
+    if (t.pr_number && t.head_sha && t.hold_reason?.startsWith('conflict with ')) {
+      this.retryResolvedConflict(t);
+      return;
+    }
     if (t.hold_reason?.startsWith('publish failed:')) {
       const attempt = this.db.prepare("SELECT id FROM attempts WHERE task_id=? AND status='publish_failed' ORDER BY rowid DESC LIMIT 1")
         .get(t.id) as { id: string } | undefined;

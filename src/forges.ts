@@ -108,8 +108,7 @@ export class ForgeRegistry {
     const cached = this.forges.get(p.id);
     if (cached?.kind === 'github' && cached.key === key) return cached.forge;
     const gh = createGh(this.ghOpts);
-    const remote = executionRemote(p);
-    const remoteUrl = remote === 'origin' ? git(p.repo_path, ['remote', 'get-url', 'origin']) : remote;
+    const remoteUrl = executionRemote(p);
     const forge = new GitHubForge({ repo, repoPath: p.repo_path, remoteUrl, gh, checksFor: createChecksFor({ repo, checkName: check, gh }) });
     this.put(p.id, { kind: 'github', key, forge });
     return forge;

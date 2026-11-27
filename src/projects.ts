@@ -128,9 +128,9 @@ export function configureProject(db: DB, id: string, c: { ciCommand?: string; ma
   if (!p) throw new Error(`unknown project ${id}`);
   const forge = validateForgeSettings(p, c);
   if ((c.forgeOrigin !== undefined && c.forgeOrigin !== p.forge_origin ||
-       forge && (forge.kind !== p.forge_kind || forge.repo !== p.github_repo || forge.check !== p.github_check)) &&
+       forge && (forge.kind !== p.forge_kind || forge.repo !== p.github_repo)) &&
       db.prepare("SELECT 1 FROM tasks WHERE project_id=? AND status NOT IN ('merged','cancelled')").get(id)) {
-    throw new Error('Finish or cancel open tasks before changing their forge or required check');
+    throw new Error('Finish or cancel open tasks before changing their forge');
   }
   if (c.autoApprove !== undefined && typeof c.autoApprove !== 'boolean') throw new Error('autoApprove must be true or false');
   // Validate both before writing either, so a bad value never leaves a half-applied update.
