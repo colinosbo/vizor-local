@@ -20,6 +20,8 @@ export interface SetupProjectInput {
   repo_path: string;
   ci_command?: string | null;
   auto_push?: number | null;
+  forge_kind?: string;
+  github_repo?: string | null;
   /** Result already computed by /api/state; reused so the origin is not resolved twice. */
   origin?: string | null;
   origin_error?: string | null;
@@ -32,7 +34,8 @@ export function projectSetup(db: DB, project: SetupProjectInput): ProjectSetup {
   const repo = project.repo_path;
   const gitRepo = safe(() => !!repo && existsSync(repo)
     && git(repo, ['rev-parse', '--is-inside-work-tree'], { allowFail: true }) === 'true');
-  const githubConnected = gitRepo && safe(() => git(repo, ['remote', 'get-url', 'github'], { allowFail: true }) !== '');
+  const githubConnected = gitRepo && (project.forge_kind === 'github' && !!project.github_repo ||
+    safe(() => git(repo, ['remote', 'get-url', 'github'], { allowFail: true }) !== ''));
   const origin = !!project.origin && !project.origin_error;
   const testCommand = typeof project.ci_command === 'string' && project.ci_command.trim() !== '';
   const autoPush = project.auto_push === 1;

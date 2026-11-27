@@ -12,7 +12,7 @@ export class AutoPusher {
   constructor(private db: DB) {}
 
   tick() {
-    for (const p of this.db.prepare('SELECT * FROM projects WHERE auto_push=1').all() as unknown as Project[]) {
+    for (const p of this.db.prepare("SELECT * FROM projects WHERE auto_push=1 AND forge_kind='local'").all() as unknown as Project[]) {
       if (this.busy.has(p.id)) continue;
       const open = (this.db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE project_id=? AND status NOT IN ('merged','cancelled')").get(p.id) as { n: number }).n;
       if (open) continue;

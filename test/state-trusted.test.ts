@@ -84,6 +84,13 @@ test('/api/state carries reviews; config accepts and rejects reviewGate and forg
     assert.equal(bad.json.error, 'reviewGate must be off, report or block');
     assert.equal((await projectRow()).review_gate, 'block', 'a rejected gate changes nothing');
 
+    const busy = await config({ forgeKind: 'github', githubRepo: 'a/b' });
+    assert.equal(busy.status, 400);
+    assert.match(String(busy.json.error), /open tasks/);
+    assert.equal((await projectRow()).forge_kind, 'local');
+    assert.equal((await config({ githubCheck: 'updated-ci' })).status, 200, 'allow CI configuration fixes with open tasks');
+    db.prepare("UPDATE tasks SET status='cancelled' WHERE id=?").run(taskId);
+
     const forge = await config({ forgeKind: 'github', githubRepo: 'a/b' });
     assert.equal(forge.status, 200, JSON.stringify(forge.json));
     const row = await projectRow();

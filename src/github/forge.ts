@@ -125,7 +125,7 @@ function redact(text: string): string {
 }
 
 function runGit(cwd: string, args: string[]): void {
-  execFileSync('git', args, { cwd, env: scrubbedEnv(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  execFileSync('git', args, { cwd, env: scrubbedEnv(), encoding: 'utf8', timeout: 60_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
 // ---- the forge ------------------------------------------------------------
@@ -230,6 +230,12 @@ export class GitHubForge implements Forge {
   /** GitHub Actions runs on push; there is nothing to trigger. */
   triggerCi(_sha: string): number {
     return 0;
+  }
+
+  rerunCi(check: Check): boolean {
+    if (!check.actionsRunId) return false;
+    this.gh('POST', '/repos/' + this.repo + '/actions/runs/' + check.actionsRunId + '/rerun');
+    return true;
   }
 
   merge(n: number, expectedHeadSha: string): string {

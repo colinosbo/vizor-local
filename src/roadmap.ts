@@ -1,7 +1,7 @@
 import { adoptLegacyPhases, tx, type DB } from './db.js';
 import { emit } from './events.js';
 import { approvePlan, validatePlan } from './plan.js';
-import type { PlanningService } from './planning.js';
+import { MAX_PLANNER_REQUEST, plannerRetryAt, type PlanningService } from './planning.js';
 import { inScope } from './scope.js';
 import type { PlanBody, Project } from './types.js';
 
@@ -10,6 +10,8 @@ export type ApproveMode = 'inherit' | 'off';
 export const APPROVE_MODES: ApproveMode[] = ['inherit', 'off'];
 export interface PhaseRow {
   id: number; project_id: string; roadmap_id: number | null; position: number; title: string; prompt: string; status: PhaseStatus; plan_id: number | null; error: string | null;
+  retry_at?: number | null;
+  planner_failures?: number;
   approve_mode: ApproveMode;  // 'off' = this phase always waits for the owner
   auto_note: string | null;   // why a phase in review was not auto-approved
   done_note: string | null;   // why a done phase finished without merged work; NULL for a normal finish
@@ -129,7 +131,8 @@ export function parseRoadmap(text: string): { title: string; prompt: string }[] 
   return text.replace(/\r\n/g, '\n').split(/^\s*-{3,}\s*$/m).map((chunk) => chunk.trim()).filter(Boolean).map((chunk) => {
     const lines = chunk.split('\n');
     const title = lines[0].replace(/^#+\s*/, '').trim().slice(0, 120);
-    const prompt = chunk.slice(0, 4000);
+    if (chunk.length > MAX_PLANNER_REQUEST - 300) throw new Error('A roadmap phase is too long; split it into smaller phases');
+    const prompt = chunk;
     return { title, prompt };
   });
 }
@@ -183,7 +186,7 @@ export class RoadmapService {
     emit(this.db, { projectId, type: 'roadmap_started', data: { roadmap: id, title } });
     return this.roadmap(id)!;
   }
-  private set(id: number, f: { status?: PhaseStatus; plan_id?: number | null; error?: string | null; auto_note?: string | null; done_note?: string | null }) {
+  private set(id: number, f: { status?: PhaseStatus; retry_at?: number | null; planner_failures?: number; plan_id?: number | null; error?: string | null; auto_note?: string | null; done_note?: string | null }) {
     const keys = Object.keys(f);
     this.db.prepare(`UPDATE phases SET ${keys.map((k) => `${k}=?`).join(', ')}, updated_at=datetime('now') WHERE id=?`).run(...(Object.values(f) as (string | number | null)[]), id);
   }
@@ -229,7 +232,7 @@ export class RoadmapService {
   retry(id: number) {
     const ph = this.db.prepare('SELECT * FROM phases WHERE id=?').get(id) as unknown as PhaseRow | undefined;
     if (!ph || ph.status !== 'failed') throw new Error('only a failed phase can be retried');
-    this.set(id, { status: 'queued', error: null, plan_id: null });
+    this.set(id, { status: 'queued', error: null, plan_id: null, retry_at: null, planner_failures: 0 });
     emit(this.db, { projectId: ph.project_id, type: 'roadmap_updated', data: { retried: id } });
   }
 
@@ -458,19 +461,24 @@ export class RoadmapService {
       }
       if (p.roadmap_paused) continue;
       if (rows.some((ph) => ['drafting', 'review', 'running', 'failed'].includes(ph.status))) continue; // one phase at a time per roadmap; failures stop it
-      const next = rows.find((ph) => ph.status === 'queued');
+        const next = rows.find((ph) => ph.status === 'queued');
+      if (next && next.retry_at && next.retry_at > Date.now()) continue;
       if (!next) continue;
       if (this.planning.list().some((r) => r.projectId === pid)) return; // the planner is busy (by hand or another roadmap)
       if ((this.db.prepare(BUSY_FOR_ROADMAP).get(pid, lineageOf(rm.id)) as { n: number }).n) continue; // let this roadmap's (and chat) work finish first
       const total = rows.length, index = rows.indexOf(next) + 1;
-      this.set(next.id, { status: 'drafting', error: null });
+      this.set(next.id, { status: 'drafting', error: null, retry_at: null });
       emit(this.db, { projectId: pid, type: 'phase_drafting', data: { phase: next.id, title: next.title, roadmap: rm.id } });
       try {
         this.planning.start(p, `Roadmap phase ${index} of ${total}: ${next.title}\nRoadmap: ${rm.title}\n\n${next.prompt}`, (o) => {
           if (o.kind === 'drafted') this.set(next.id, { status: 'review', plan_id: o.planId });
-          else this.set(next.id, { status: 'failed', error: o.kind === 'failed' ? o.error : `planner declined: ${o.reply}`.slice(0, 500) });
+          else if (o.kind === 'failed' && !next.planner_failures) {
+            const retryAt = plannerRetryAt(o.error, Date.now());
+            if (retryAt === null) this.set(next.id, { status: 'failed', error: o.error });
+            else this.set(next.id, { status: 'queued', error: o.error, retry_at: retryAt, planner_failures: 1 });
+          } else this.set(next.id, { status: 'failed', error: o.kind === 'failed' ? o.error : `planner declined: ${o.reply}`.slice(0, 500) });
           emit(this.db, { projectId: pid, type: 'roadmap_updated', data: { phase: next.id, outcome: o.kind } });
-        }, { lineage: lineageOf(rm.id) });
+        }, { lineage: lineageOf(rm.id), phaseId: next.id });
       } catch (e) {
         this.set(next.id, { status: 'failed', error: String((e as Error).message ?? e) });
       }

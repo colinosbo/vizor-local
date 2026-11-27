@@ -2,8 +2,11 @@ import type { DB } from './db.js';
 import { tx } from './db.js';
 import { emit } from './events.js';
 import { planShape, type PlanShape } from './plan-shape.js';
-import { scopesOverlap } from './scope.js';
-import { MODEL_CHOICES, type PlanBody } from './types.js';
+import { allPaths, executionRemote, fetchBase, git, parseNameStatus } from './git.js';
+import { inScope, scopesOverlap } from './scope.js';
+import { MODEL_CHOICES, type PlanBody, type Project } from './types.js';
+
+export const MALFORMED_TASK = 'Every task must contain text fields and arrays of strings for writeScope and deps';
 
 export interface PlanValidation { errors: string[]; warnings: string[] }
 
@@ -11,6 +14,12 @@ export function validatePlan(body: PlanBody): PlanValidation {
   const errors: string[] = [];
   const warnings: string[] = [];
   if (!body || !Array.isArray(body.tasks) || body.tasks.length === 0) return { errors: ['plan has no tasks'], warnings };
+  if (body.tasks.some((t) => !t || typeof t !== 'object' || Array.isArray(t) ||
+    typeof t.key !== 'string' || typeof t.title !== 'string' || typeof t.prompt !== 'string' || typeof t.acceptance !== 'string' ||
+    !Array.isArray(t.writeScope) || t.writeScope.some((g) => typeof g !== 'string') ||
+    !Array.isArray(t.deps) || t.deps.some((d) => typeof d !== 'string'))) {
+    return { errors: [MALFORMED_TASK], warnings };
+  }
   const keys = new Set<string>();
   for (const t of body.tasks) {
     if (!/^[a-z0-9][a-z0-9-]{0,40}$/.test(t.key ?? '')) errors.push(`invalid task key: ${JSON.stringify(t.key)}`);
@@ -68,14 +77,15 @@ export function shapeOfBody(body: unknown): PlanShape {
 }
 
 /** `lineage`: null for a chat plan, 'roadmap:<id>' for a roadmap phase. See approvePlan. */
-export function draftPlan(db: DB, projectId: string, body: PlanBody, lineage: string | null = null): { planId: number; version: number; validation: PlanValidation; shape: PlanShape } {
+export function draftPlan(db: DB, projectId: string, body: PlanBody, lineage: string | null = null, onDrafted?: (planId: number) => void, baseSha: string | null = null): { planId: number; version: number; validation: PlanValidation; shape: PlanShape } {
   const validation = validatePlan(body);
   // Advisory only: a pure function of the stored body, so that body is the stored record for each version.
   const shape = shapeOfBody(body);
   return tx(db, () => {
     const v = (db.prepare('SELECT COALESCE(MAX(version),0)+1 AS v FROM plans WHERE project_id=?').get(projectId) as { v: number }).v;
-    const r = db.prepare("INSERT INTO plans(project_id, version, status, body, lineage) VALUES (?,?,'draft',?,?) RETURNING id").get(projectId, v, JSON.stringify(body), lineage) as { id: number };
+    const r = db.prepare("INSERT INTO plans(project_id, version, status, body, lineage, base_sha) VALUES (?,?,'draft',?,?,?) RETURNING id").get(projectId, v, JSON.stringify(body), lineage, baseSha) as { id: number };
     emit(db, { projectId, type: 'plan_drafted', data: { planId: r.id, version: v, validation, shape } });
+    onDrafted?.(r.id);
     return { planId: r.id, version: v, validation, shape };
   });
 }
@@ -121,12 +131,21 @@ const IN_FLIGHT_SQL = `(status IN ('running','waiting_ci','merging') OR (pr_numb
  */
 export function approvePlan(db: DB, planId: number, opts: { force?: boolean } = {}): void {
   tx(db, () => {
-    const plan = db.prepare('SELECT * FROM plans WHERE id=?').get(planId) as { id: number; project_id: string; version: number; status: string; body: string; lineage: string | null } | undefined;
+    const plan = db.prepare('SELECT * FROM plans WHERE id=?').get(planId) as { id: number; project_id: string; version: number; status: string; body: string; lineage: string | null; base_sha: string | null } | undefined;
     if (!plan) throw new Error('plan not found');
     if (plan.status !== 'draft') throw new Error(`plan is ${plan.status}`);
     const body = JSON.parse(plan.body) as PlanBody;
     const { errors } = validatePlan(body);
     if (errors.length) throw new Error('plan invalid: ' + errors.join('; '));
+    if (plan.base_sha) {
+      const project = db.prepare('SELECT * FROM projects WHERE id=?').get(plan.project_id) as unknown as Project;
+      const current = fetchBase(project.repo_path, project.base_branch, executionRemote(project));
+      if (current !== plan.base_sha) {
+        const changed = allPaths(parseNameStatus(git(project.repo_path, ['diff', '--name-status', '-M', plan.base_sha, current, '--'])));
+        const overlap = changed.filter((path) => body.tasks.some((t) => inScope(path, t.writeScope)));
+        if (overlap.length) throw new Error('Base advanced in the plan scope (' + overlap.slice(0, 5).join(', ') + '); draft from the current base');
+      }
+    }
 
     const old = db.prepare("SELECT id, version FROM plans WHERE project_id=? AND status='approved' AND COALESCE(lineage,'')=? ORDER BY version")
       .all(plan.project_id, plan.lineage ?? '') as { id: number; version: number }[];

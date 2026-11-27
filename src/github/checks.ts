@@ -81,9 +81,9 @@ function buildLog(title: string | null | undefined, summary: string | null | und
  *   It is never dropped, or an impostor could hide behind a trusted check.
  * - any other name: 'github:<name>' + 'untrusted:<slug>'; informational, merge ignores it.
  */
-export function mapCheckRun(run: unknown, sha: string, checkName: string): Check | null {
+export function mapCheckRun(run: unknown, sha: string, checkName: string, repo?: string): Check | null {
   if (!isRecord(run)) return null;
-  const { id, name, head_sha, status, conclusion, app, output, html_url } = run;
+  const { id, name, head_sha, status, conclusion, app, output, html_url, details_url } = run;
   if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0) return null;
   if (typeof name !== 'string' || name === '') return null;
   if (typeof head_sha !== 'string' || head_sha.toLowerCase() !== sha.toLowerCase()) return null;
@@ -101,7 +101,12 @@ export function mapCheckRun(run: unknown, sha: string, checkName: string): Check
   if (!optString(title) || !optString(summary)) return null;
 
   const trusted = name === checkName && slug === TRUSTED_APP;
+  const runId = typeof details_url === 'string' && trusted && repo &&
+    details_url.toLowerCase().startsWith('https://github.com/' + repo.toLowerCase() + '/actions/runs/')
+    ? Number(/^https:\/\/github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)(?:[/?#]|$)/i.exec(details_url)?.[1])
+    : NaN;
   return {
+    ...(Number.isSafeInteger(runId) && runId > 0 ? { actionsRunId: runId } : {}),
     id,
     sha,
     name: name === checkName ? REQUIRED_CHECK : `github:${name}`,
@@ -131,7 +136,7 @@ export function createChecksFor(opts: ChecksOptions): (sha: string) => Check[] {
       }
       const runs: unknown[] = res.check_runs;
       for (const run of runs) {
-        const check = mapCheckRun(run, sha, checkName);
+        const check = mapCheckRun(run, sha, checkName, repo);
         if (check) checks.push(check);
       }
       const total = typeof res.total_count === 'number' ? res.total_count : undefined;

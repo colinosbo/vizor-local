@@ -803,7 +803,11 @@
             <label class="field" style="flex:0 0 96px"><span>Workers</span><input type="number" id="aWorkers" min="1" max="6" value="2"></label>
           </div>
           <label class="field"><span>Test command</span><input type="text" id="aCi" class="mono" value="npm test" spellcheck="false"></label>
-          <label class="check"><input type="checkbox" id="aCreate" checked>Create git repo and local origin if missing</label>
+          <label class="field"><span>Repository source</span><select id="aSource"><option value="local">Local repository</option><option value="github">GitHub repository</option></select></label>
+          <label class="check" id="aLocal"><input type="checkbox" id="aCreate" checked>Create git repo and local origin if missing</label>
+          <label class="field" id="aGitHubRepoRow" hidden><span>GitHub repository</span><input id="aGitHubRepo" type="text" class="mono" placeholder="owner/repo or GitHub URL" spellcheck="false"><small>Use a checkout with shared Git history or an empty destination. Vizor clones it when needed.</small></label>
+          <label class="field" id="aBaseRow" hidden><span>Base branch (optional)</span><input id="aBase" type="text" placeholder="Repository default" spellcheck="false"></label>
+          <label class="field" id="aGitHubCheckRow" hidden><span>Required GitHub check</span><input id="aGitHubCheck" type="text" value="ci" spellcheck="false"><small>Configure this check for pull requests and pushes to the base branch. Private repos need Git credentials and gh sign-in.</small></label>
           <div><button class="btn primary" type="submit">Add project</button></div>
         </form>
         <form class="card form" id="globalForm">

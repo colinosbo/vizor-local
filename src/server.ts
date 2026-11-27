@@ -148,7 +148,7 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
           version,
           projects: (db.prepare('SELECT * FROM projects ORDER BY created_at').all() as any[]).map((p) => {
             let row: any;
-            try { row = { ...p, origin: resolveLocalOrigin(p), origin_error: null }; }
+            try { row = { ...p, origin: p.forge_kind === 'github' ? 'GitHub ' + p.github_repo : resolveLocalOrigin(p), origin_error: null }; }
             catch (e) { row = { ...p, origin: null, origin_error: String((e as Error).message ?? e) }; }
             let setup = EMPTY_SETUP;
             try { setup = projectSetup(db, row); } catch { /* setup is advisory; never fail /api/state */ }
@@ -159,7 +159,7 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
           // Every plan version, superseded and task-less ones included. plans has no created_at column, so it
           // comes from the plan_drafted event (null if the event is gone); phase_id is the phase that owns the plan.
           plans: db.prepare(
-            `SELECT pl.id, pl.project_id, pl.version, pl.status, pl.body, pl.approved_at, pl.lineage,
+            `SELECT pl.id, pl.project_id, pl.version, pl.status, pl.body, pl.approved_at, pl.lineage, pl.base_sha,
                (SELECT MIN(e.ts) FROM events e WHERE e.type='plan_drafted' AND e.project_id=pl.project_id
                   AND json_extract(e.data,'$.planId')=pl.id) AS created_at,
                (SELECT ph.id FROM phases ph WHERE ph.plan_id=pl.id ORDER BY ph.id LIMIT 1) AS phase_id,
@@ -230,7 +230,11 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
         }
         if (a === 'projects' && !id) {
           const p = addProject(db, String(body.path ?? ''), { maxWorkers: Number(body.maxWorkers ?? 1), ciCommand: body.ciCommand ? String(body.ciCommand) : undefined,
-            name: body.name ? String(body.name) : undefined, createOrigin: !!body.createOrigin, createFolder: !!body.createFolder, originsDir: opts.originsDir });
+            name: body.name ? String(body.name) : undefined,
+            githubRepo: typeof body.githubRepo === 'string' ? body.githubRepo : undefined,
+            githubCheck: typeof body.githubCheck === 'string' ? body.githubCheck : undefined,
+            baseBranch: typeof body.baseBranch === 'string' && body.baseBranch.trim() ? body.baseBranch.trim() : undefined,
+            createOrigin: !!body.createOrigin, createFolder: !!body.createFolder, originsDir: opts.originsDir });
           return json(res, 200, p);
         }
         if (a === 'projects' && action === 'chat') {
@@ -299,6 +303,10 @@ export async function startServer(db: DB, runner: Runner, planning: PlanningServ
         if (a === 'projects' && action === 'workers') { configureProject(db, id, { maxWorkers: Number(body.maxWorkers) }); return json(res, 200, { ok: true }); }
         if (a === 'settings' && id === 'global') { setSetting(db, 'global_max_workers', String(Math.max(1, Math.min(12, Number(body.globalMaxWorkers) || 1)))); return json(res, 200, { ok: true }); }
         if (a === 'attempts' && action === 'cancel') { runner.cancel(id); return json(res, 200, { ok: true }); }
+        if (a === 'tasks' && action === 'verify-base') {
+          runner.verifyCurrentBase(id);
+          return json(res, 200, { ok: true });
+        }
         if (a === 'tasks' && action === 'retry') { runner.retry(id); return json(res, 200, { ok: true }); }
         if (a === 'tasks' && action === 'merge-anyway') {
           // Owner-only route: merges a task held by plan supersession or by blocking review findings, if every other merge check passes.
