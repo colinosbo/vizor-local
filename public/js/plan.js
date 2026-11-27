@@ -145,6 +145,7 @@ function planCanvas(p) {
     h('h1', { text: `Plan v${plan.version}` }), h('span', { class: 'plan-src', 'data-plan-source': '', text: planSource(plan) }),
     h('span', { class: 'status' }, lamp(anyRunning ? 'live' : plan.status === 'approved' ? 'ok' : ''), statusWord, plan.status === 'superseded' ? infoBtn('superseded') : null),
     h('span', { class: 'grow' }),
+    plan.base_sha ? h('span', { class: 'mono muted', text: 'Base ' + plan.base_sha.slice(0, 8), title: plan.base_sha }) : null,
     plans.length > 1 ? h('div', { class: 'seg', role: 'group', 'aria-label': 'Plan version' }, plans.slice(0, 8).map((x) =>
       h('button', { 'aria-pressed': String(x.id === plan.id), onclick: () => { selPlan[p.id] = x.id; setRoute({ selNode: null }); renderPlan(); }, text: 'v' + x.version }))) : null));
 
@@ -400,6 +401,7 @@ function roadmapBlock(p, r, phs) {
           : h('button', { class: 'rm-mode', type: 'button', 'data-mode': 'auto', 'data-rm-key': 'mode:' + ph.id, title: 'Auto-approves if the limits pass. Click to approve this phase yourself',
             onclick: () => rmCall(ph.id, `/api/phases/${ph.id}/approve-mode`, { mode: 'off' }, 'mode:' + ph.id) }, 'auto')) : null,
         ph.status === 'review' && ph.plan_id ? h('button', { class: 'btn', onclick: () => { selPlan[p.id] = ph.plan_id; setRoute({ selNode: null }); renderPlan(); } }, 'Review plan') : null,
+        ph.retry_at ? h('p', { class: 'muted', text: 'Planner retries at ' + new Date(ph.retry_at).toLocaleTimeString() }) : null,
         ph.status === 'failed' ? h('button', { class: 'btn', onclick: async () => { if (await post(`/api/phases/${ph.id}/retry`)) refresh(); } }, icon('retry'), 'Retry') : null,
         ph.status === 'running' && !state.tasks.some((t) => t.plan_id === ph.plan_id && !['merged', 'cancelled'].includes(t.status))
           ? h('button', { class: 'btn', type: 'button', 'data-mark-done': '', onclick: async () => { if (await post(`/api/phases/${ph.id}/mark-done`)) { toast('Phase marked done'); refresh(); } } }, 'Mark done') : null,

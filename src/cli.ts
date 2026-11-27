@@ -147,6 +147,8 @@ async function serve() {
   runner.start(500);
   const planning = new PlanningService(db, orch);
   const roadmap = new RoadmapService(db, planning);
+  planning.recoverChat();
+  setInterval(() => { try { planning.recoverChat(); } catch (e) { console.error('planning:', (e as Error).message); } }, 2000);
   setInterval(() => { try { roadmap.tick(); } catch (e) { console.error('roadmap:', (e as Error).message); } }, 2000);
   const autoPush = new AutoPusher(db);
   setInterval(() => { try { autoPush.tick(); } catch (e) { console.error('auto-push:', (e as Error).message); } }, 15000);
@@ -181,9 +183,9 @@ async function main() {
     return;
   }
   if (cmd === 'add') {
-    if (!args[1] || args[1].startsWith('--')) throw new Error('usage: add <checkout> [--name N] [--workers N] [--ci "cmd"] [--base main] [--create-origin]');
+    if (!args[1] || args[1].startsWith('--')) throw new Error('usage: add <checkout> [--name N] [--workers N] [--ci "cmd"] [--base main] [--create-origin | --github owner/repo] [--check ci]');
     const p = addProject(appDb(), args[1], { maxWorkers: Number(flag('workers', '1')), ciCommand: flag('ci'), name: flag('name'),
-      baseBranch: flag('base'), createOrigin: has('create-origin'), originsDir: join(dataDir(), 'origins') });
+      baseBranch: flag('base'), githubRepo: flag('github'), githubCheck: flag('check'), createOrigin: has('create-origin'), originsDir: join(dataDir(), 'origins') });
     return console.log('added ' + describe(p));
   }
   if (cmd === 'config') {

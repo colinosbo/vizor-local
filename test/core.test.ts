@@ -206,7 +206,8 @@ test('failed CI is replayed after rollback and restart, then queued exactly once
   approve(db, 'p', { summary: '', tasks: [task('a', ['a/**'])] });
   const id = 'p-v1-a';
   const check: Check = { id: 7, sha: 'head', name: 'local-ci', conclusion: 'failure', workflow_ref: 'trusted@main', log: 'failed assertion' };
-  const makeRunner = () => new Runner(db, stubForge({ checksFor: () => [check] }), new FakeWorkerFactory({}), { worktreesDir: tmp() });
+  const pr: PullRequest = { number: 3, base: 'main', branch: 'local/' + id, headSha: 'head', state: 'open', body: taskMarker(id), title: 'a', mergeSha: null };
+  const makeRunner = () => new Runner(db, stubForge({ getPr: () => pr, checksFor: () => [check] }), new FakeWorkerFactory({}), { worktreesDir: tmp() });
   db.prepare("UPDATE tasks SET status='waiting_ci', pr_number=3, head_sha='head'").run();
   db.exec("CREATE TRIGGER simulate_crash BEFORE UPDATE ON tasks WHEN NEW.status='ready' BEGIN SELECT RAISE(ABORT, 'interrupted'); END");
   assert.throws(() => makeRunner().handleCheck(id, check), /interrupted/);
@@ -234,7 +235,8 @@ test('recover interrupted repairs written by older builds without replaying a st
     db.prepare("UPDATE tasks SET status='waiting_ci', pr_number=3, head_sha='head'").run();
     db.prepare('INSERT INTO processed_checks(check_id, task_id) VALUES (?,?)').run(check.id, id);
     if (hasRepairKey) db.prepare('INSERT INTO repairs(key, task_id, head_sha, check_id) VALUES (?,?,?,?)').run(id + ':head:7', id, 'head', 7);
-    const runner = new Runner(db, stubForge({ checksFor: () => [check] }), new FakeWorkerFactory({}), { worktreesDir: tmp() });
+    const pr: PullRequest = { number: 3, base: 'main', branch: 'local/' + id, headSha: 'head', state: 'open', body: taskMarker(id), title: 'a', mergeSha: null };
+    const runner = new Runner(db, stubForge({ getPr: () => pr, checksFor: () => [check] }), new FakeWorkerFactory({}), { worktreesDir: tmp() });
     runner.processChecks();
     assert.equal(runner.task(id).status, 'ready');
     assert.equal(runner.task(id).repair_count, 1);

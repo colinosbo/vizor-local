@@ -158,7 +158,10 @@ function evText(e) {
     case 'pr_merged': return `PR #${d.pr} merged as ${short(d.mergeSha)}, verifying`;
     case 'task_merged': return `verified ${short(d.mergeSha)}`;
     case 'branch_updated_from_base': return `branch updated, new head ${short(d.head)}`;
+    case 'check_waiting':
     case 'task_blocked': return d.reason;
+    case 'recovery_adopted_merge': return 'Recovered merge ' + String(d.mergeSha || '').slice(0, 8);
+    case 'merge_followup_verification': return 'Verifying follow-up ' + String(d.sha || '').slice(0, 8);
     case 'owner_override_merge': return `Owner merged ${state.tasks.find((x) => x.id === d.taskId)?.key || 'task'} anyway at ${short(d.headSha)}`;
     case 'plan_auto_approved': { const v = planFor(d.planId)?.version; return `Plan${v != null ? ' v' + v : ''} auto-approved (project setting)`; }
     case 'auto_approve_halted': return `Auto-approve halted: ${d.reason}`;
@@ -272,7 +275,12 @@ function renderRun() {
   runEl.dataset.task = t.id;
   put(runEl, 
     h('div', { style: 'display:flex; align-items:center; gap:16px' }, h('h1', { class: 'grow', style: 'overflow-wrap:anywhere', text: t.title }),
-      t.status === 'blocked' ? h('button', { class: 'btn', onclick: () => retry(t) }, icon('retry'), 'Retry task') : null,
+      t.status === 'blocked' && !t.merge_sha ? h('button', { class: 'btn', onclick: () => retry(t) }, icon('retry'), 'Retry task') : null,
+      t.status === 'blocked' && t.merge_sha ? h('button', { class: 'btn', onclick: () => retry(t) }, icon('retry'), 'Retry verification') : null,
+      t.status === 'blocked' && t.merge_sha ? h('button', { class: 'btn', onclick: async () => {
+        if (window.confirm('Verify the current base after your follow-up? Dependent tasks can start if CI passes.') &&
+            await post('/api/tasks/' + encodeURIComponent(t.id) + '/verify-base')) refresh();
+      } }, 'Verify follow-up on base') : null,
       canMergeAnyway(t) && mergeAnyway?.taskId !== t.id ? h('button', { class: 'btn', 'data-merge-anyway': '', onclick: () => openMergeAnyway(t) }, icon('ship'), 'Merge anyway') : null,
       active ? h('button', { class: 'btn ghost', onclick: () => cancelRun(active) }, icon('x'), 'Cancel run') : null,
       canCancelTask(t) && cancelTask?.taskId !== t.id ? h('button', { class: 'btn ghost', 'data-cancel-task': '', onclick: () => openCancelTask(t) }, icon('x'), 'Cancel task') : null),

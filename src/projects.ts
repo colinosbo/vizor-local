@@ -1,9 +1,9 @@
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import type { DB } from './db.js';
 import { emit } from './events.js';
 import { resolveLocalOrigin } from './forges.js';
-import { git, revParse } from './git.js';
+import { fetchBase, git, githubRepoFromRemote, revParse } from './git.js';
 import { DENYLIST_GITIGNORE } from './push-guard.js';
 import { DEFAULT_CI, DEFAULT_GITHUB_CHECK, FORGE_KINDS, isForgeKind, isGithubRepo, isModelDefault, MODEL_DEFAULTS,
   type ForgeKind, type ModelDefault, type Project } from './types.js';
@@ -23,12 +23,16 @@ export interface AddProjectOpts {
   originsDir?: string;
   /** Create the project folder (recursively) when it does not exist yet. Requires createOrigin. */
   createFolder?: boolean;
+  githubRepo?: string;
+  githubCheck?: string;
 }
 
 export const projectId = (name: string) => name.toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 30);
 
 /** Bind a local checkout. Verifies it is a git checkout with a usable forge origin and the base branch. */
 export function addProject(db: DB, repoPath: string, opts: AddProjectOpts = {}): Project {
+  if (!repoPath.trim()) throw new Error('project folder is required');
+  if (opts.githubRepo !== undefined) return addGitHubProject(db, repoPath, opts);
   if (opts.createFolder && !opts.createOrigin) throw new Error('createFolder requires createOrigin');
   if (opts.createFolder && !existsSync(repoPath)) mkdirSync(repoPath, { recursive: true });
   if (!existsSync(repoPath)) throw new Error(`${repoPath} does not exist`);
@@ -74,12 +78,60 @@ export function addProject(db: DB, repoPath: string, opts: AddProjectOpts = {}):
   return db.prepare('SELECT * FROM projects WHERE id=?').get(id) as unknown as Project;
 }
 
+/** Clone into an empty destination or attach a checkout whose origin identifies the same repository. */
+function addGitHubProject(db: DB, repoPath: string, opts: AddProjectOpts): Project {
+  const input = opts.githubRepo!.trim();
+  const repo = githubRepoFromRemote(input) ?? input;
+  if (!isGithubRepo(repo)) throw new Error('Enter a GitHub repository as owner/name or a github.com repository URL');
+  const check = opts.githubCheck?.trim() || DEFAULT_GITHUB_CHECK;
+  if (check.length > 100 || /[\r\n]/.test(check)) throw new Error('required check must be a single line of at most 100 characters');
+  const path = resolve(repoPath);
+  const name = opts.name ?? basename(path);
+  const id = projectId(name);
+  const registeredPath = existsSync(path) ? canonicalPath(path) : process.platform === 'win32' ? path.toLowerCase() : path;
+  if (db.prepare('SELECT 1 FROM projects WHERE id=? OR repo_path=?').get(id, registeredPath)) {
+    throw new Error('This project name or folder is already registered');
+  }
+  if (opts.baseBranch) git(process.cwd(), ['check-ref-format', 'refs/heads/' + opts.baseBranch]);
+  const top = existsSync(path) ? git(path, ['rev-parse', '--show-toplevel'], { allowFail: true }) : '';
+  if (top) {
+    if (canonicalPath(top) !== canonicalPath(path)) throw new Error('Choose the root of the checkout');
+  } else {
+    if (existsSync(path) && readdirSync(path).length) throw new Error('Choose an empty folder or a checkout of this GitHub repository');
+    mkdirSync(dirname(path), { recursive: true });
+    const branch = opts.baseBranch ? ['--branch', opts.baseBranch] : [];
+    git(dirname(path), ['clone', '--quiet', ...branch, '--', 'https://github.com/' + repo + '.git', path]);
+  }
+  const url = 'https://github.com/' + repo + '.git';
+  const origin = git(path, ['config', '--get', 'remote.origin.url'], { allowFail: true });
+  const sameOrigin = githubRepoFromRemote(origin)?.toLowerCase() === repo.toLowerCase();
+  const defaultRef = sameOrigin ?
+    git(path, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], { allowFail: true }).replace(/^origin\//, '') :
+    /^ref: refs\/heads\/(\S+)\s+HEAD/m.exec(git(path, ['ls-remote', '--symref', '--', url, 'HEAD']))?.[1];
+  const base = opts.baseBranch || defaultRef || 'main';
+  const sha = fetchBase(path, base, sameOrigin ? 'origin' : url);
+  if (top && !git(path, ['merge-base', 'HEAD', sha], { allowFail: true })) {
+    throw new Error('This checkout has no common history with the GitHub repository. Choose an empty folder to clone it');
+  }
+  if (!origin) git(path, ['remote', 'add', 'origin', url]);
+  db.prepare(`INSERT INTO projects(id,name,repo_path,base_branch,max_workers,ci_command,forge_kind,github_repo,github_check,review_gate)
+    VALUES (?,?,?,?,?,?,'github',?,?,'block')`)
+    .run(id, name, canonicalPath(path), base, opts.maxWorkers ?? 1, opts.ciCommand?.trim() || DEFAULT_CI, repo, check);
+  emit(db, { projectId: id, type: 'project_added', data: { forge: 'github', repo, base } });
+  return db.prepare('SELECT * FROM projects WHERE id=?').get(id) as unknown as Project;
+}
+
 /** Owner-only project settings. */
 export function configureProject(db: DB, id: string, c: { ciCommand?: string; maxWorkers?: number; forgeOrigin?: string | null; autoPush?: boolean; autoApprove?: boolean;
   plannerModel?: ModelDefault; workerModel?: ModelDefault; forgeKind?: ForgeKind; githubRepo?: string; githubCheck?: string }): Project {
   const p = db.prepare('SELECT * FROM projects WHERE id=?').get(id) as unknown as Project | undefined;
   if (!p) throw new Error(`unknown project ${id}`);
   const forge = validateForgeSettings(p, c);
+  if ((c.forgeOrigin !== undefined && c.forgeOrigin !== p.forge_origin ||
+       forge && (forge.kind !== p.forge_kind || forge.repo !== p.github_repo || forge.check !== p.github_check)) &&
+      db.prepare("SELECT 1 FROM tasks WHERE project_id=? AND status NOT IN ('merged','cancelled')").get(id)) {
+    throw new Error('Finish or cancel open tasks before changing their forge or required check');
+  }
   if (c.autoApprove !== undefined && typeof c.autoApprove !== 'boolean') throw new Error('autoApprove must be true or false');
   // Validate both before writing either, so a bad value never leaves a half-applied update.
   if (c.plannerModel !== undefined && !isModelDefault(c.plannerModel)) throw new Error(MODEL_DEFAULT_ERROR('planner_model'));

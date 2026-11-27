@@ -123,10 +123,18 @@ $('sNotify').onchange = async (e) => {
   }
   setNotify(p.id, true); toast(`Desktop notifications on for ${p.name}`);
 };
+$('aSource').onchange = () => {
+  const github = $('aSource').value === 'github';
+  $('aLocal').hidden = github;
+  for (const row of ['aGitHubRepoRow', 'aBaseRow', 'aGitHubCheckRow']) $(row).hidden = !github;
+  $('aGitHubRepo').required = github;
+};
 $('addForm').onsubmit = async (e) => {
   e.preventDefault();
+  const github = $('aSource').value === 'github';
   const r = await post('/api/projects', { path: $('aPath').value.trim(), name: $('aName').value.trim() || undefined, ciCommand: $('aCi').value.trim(),
-    maxWorkers: Number($('aWorkers').value), createOrigin: $('aCreate').checked });
+    maxWorkers: Number($('aWorkers').value), createOrigin: !github && $('aCreate').checked,
+    ...(github ? { githubRepo: $('aGitHubRepo').value.trim(), githubCheck: $('aGitHubCheck').value.trim(), baseBranch: $('aBase').value.trim() } : {}) });
   if (r) { toast(`Added ${r.name}`); $('aPath').value = ''; $('aName').value = ''; setRoute({ current: r.id, view: 'plan' }); writeHash(); refresh(); }
 };
 $('globalForm').onsubmit = async (e) => {

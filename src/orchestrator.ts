@@ -1,7 +1,10 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { killTree } from './forge.js';
-import { git } from './git.js';
+import { mkdtempSync, rmdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { executionRemote, fetchBase, git } from './git.js';
 import { isModelDefault, type PlanBody, type Project } from './types.js';
 
 /**
@@ -10,7 +13,7 @@ import { isModelDefault, type PlanBody, type Project } from './types.js';
  * An empty task list means the orchestrator declined (wrong repo, unclear request…); no plan is created.
  */
 export type Progress = (text: string) => void;
-export interface Orchestrator { draft(project: Project, request: string, onProgress?: Progress): Promise<{ reply: string; plan: PlanBody }> }
+export interface Orchestrator { draft(project: Project, request: string, onProgress?: Progress): Promise<{ reply: string; plan: PlanBody; baseSha?: string }> }
 
 export const PLAN_SCHEMA = {
   type: 'object', required: ['reply', 'plan'],
@@ -86,7 +89,19 @@ export function plannerArgs(project: Pick<Project, 'planner_model'>, prompt: str
  */
 export class ClaudeOrchestrator implements Orchestrator {
   constructor(private bin = 'claude', private preArgs: string[] = [], private timeoutMs = 10 * 60_000) {}
-  draft(project: Project, request: string, onProgress?: Progress) {
+  async draft(project: Project, request: string, onProgress?: Progress) {
+    const sha = fetchBase(project.repo_path, project.base_branch, executionRemote(project));
+    const dir = mkdtempSync(join(tmpdir(), 'vizor-plan-'));
+    try {
+      git(project.repo_path, ['worktree', 'add', '--quiet', '--detach', dir, sha]);
+      return { ...await this.draftInFolder({ ...project, repo_path: dir }, request, onProgress), baseSha: sha };
+    } finally {
+      git(project.repo_path, ['worktree', 'remove', '--force', dir], { allowFail: true });
+      try { rmdirSync(dir); } catch { /* An OS lock may keep a temporary directory open. */ }
+    }
+  }
+
+  private draftInFolder(project: Project, request: string, onProgress?: Progress) {
     const files = git(project.repo_path, ['ls-files']).split('\n').slice(0, 300).join('\n');
     const args = plannerArgs(project, plannerPrompt(project, files, request), this.preArgs);
     return new Promise<{ reply: string; plan: PlanBody }>((resolve, reject) => {

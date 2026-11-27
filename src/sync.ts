@@ -1,6 +1,6 @@
 import type { DB } from './db.js';
 import { emit } from './events.js';
-import { git, revParse } from './git.js';
+import { executionRemote, fetchBase, git, revParse } from './git.js';
 import type { Project } from './types.js';
 
 export type SyncResult = { synced: true; from: string; to: string } | { synced: false; reason: string };
@@ -17,15 +17,15 @@ export function syncCheckout(db: DB, p: Project, opts: { quiet?: boolean } = {})
     return { synced: false, reason };
   };
   try {
-    git(repo, ['fetch', '--quiet', 'origin']);
+    const target = fetchBase(repo, base, executionRemote(p));
     const branch = git(repo, ['rev-parse', '--abbrev-ref', 'HEAD'], { allowFail: true });
     if (branch !== base) return skip(`your folder is on branch ${branch || '(none)'}, not ${base}`);
     if (git(repo, ['status', '--porcelain', '--untracked-files=no'])) return skip('your folder has uncommitted changes');
-    const head = revParse(repo, 'HEAD'), target = revParse(repo, `origin/${base}`);
+    const head = revParse(repo, 'HEAD');
     if (!head || !target) return skip(`origin/${base} not found`);
     if (head === target) return { synced: false, reason: 'already up to date' };
-    if (git(repo, ['merge-base', 'HEAD', `origin/${base}`], { allowFail: true }) !== head) return skip('your folder has commits that are not in the origin');
-    git(repo, ['merge', '--ff-only', '--quiet', `origin/${base}`]);
+    if (git(repo, ['merge-base', 'HEAD', target], { allowFail: true }) !== head) return skip('your folder has commits that are not in the origin');
+    git(repo, ['merge', '--ff-only', '--quiet', target]);
     emit(db, { projectId: p.id, type: 'folder_synced', data: { from: head, to: target } });
     return { synced: true, from: head, to: target };
   } catch (e) {
@@ -39,8 +39,10 @@ export function folderStatus(p: Project) {
   const branch = git(repo, ['rev-parse', '--abbrev-ref', 'HEAD'], { allowFail: true });
   const dirty = !!git(repo, ['status', '--porcelain', '--untracked-files=no'], { allowFail: true });
   const head = revParse(repo, 'HEAD');
-  const origin = revParse(repo, `origin/${base}`);
-  const behind = head && origin ? Number(git(repo, ['rev-list', '--count', `HEAD..origin/${base}`], { allowFail: true }) || 0) : 0;
-  const ahead = head && origin ? Number(git(repo, ['rev-list', '--count', `origin/${base}..HEAD`], { allowFail: true }) || 0) : 0;
+  const remote = executionRemote(p);
+  const ref = (remote === 'origin' ? 'refs/remotes/origin/' : 'refs/remotes/vizor-base/') + base;
+  const origin = revParse(repo, ref);
+  const behind = head && origin ? Number(git(repo, ['rev-list', '--count', 'HEAD..' + ref], { allowFail: true }) || 0) : 0;
+  const ahead = head && origin ? Number(git(repo, ['rev-list', '--count', ref + '..HEAD'], { allowFail: true }) || 0) : 0;
   return { branch, dirty, head, origin, behind, ahead };
 }

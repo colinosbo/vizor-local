@@ -24,6 +24,11 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS planning_requests (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), text TEXT NOT NULL,
+  started_at TEXT NOT NULL, failures INTEGER NOT NULL DEFAULT 0, retry_at INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id TEXT NOT NULL REFERENCES projects(id),
@@ -157,12 +162,12 @@ export function openDb(path: string): DB {
     auto_approve: 'INTEGER NOT NULL DEFAULT 0', auto_approve_halted: 'TEXT',
     planner_model: "TEXT NOT NULL DEFAULT 'auto'", worker_model: "TEXT NOT NULL DEFAULT 'auto'", // 'auto' | 'sonnet' | 'opus'
     forge_kind: "TEXT NOT NULL DEFAULT 'local'", github_repo: 'TEXT', github_check: "TEXT NOT NULL DEFAULT 'ci'" }); // 'local' | 'github'
-  ensureColumns(db, 'attempts', { model: 'TEXT', security: 'TEXT' }); // security: JSON AttemptSecurity from the post-attempt audit
-  ensureColumns(db, 'tasks', { usage_retry_at: 'INTEGER', model: 'TEXT', model_why: 'TEXT' });
-  ensureColumns(db, 'phases', { approve_mode: "TEXT NOT NULL DEFAULT 'inherit'", auto_note: 'TEXT', done_note: 'TEXT', roadmap_id: 'INTEGER' });
+  ensureColumns(db, 'attempts', { model: 'TEXT', security: 'TEXT', publish_retry_at: 'INTEGER', publish_retries: 'INTEGER NOT NULL DEFAULT 0' }); // security: JSON AttemptSecurity from the post-attempt audit
+  ensureColumns(db, 'tasks', { pending_update_sha: 'TEXT', merge_intent_sha: 'TEXT', verification_sha: 'TEXT', check_wait_since: 'INTEGER', usage_retry_at: 'INTEGER', model: 'TEXT', model_why: 'TEXT' });
+  ensureColumns(db, 'phases', { approve_mode: "TEXT NOT NULL DEFAULT 'inherit'", auto_note: 'TEXT', done_note: 'TEXT', roadmap_id: 'INTEGER', retry_at: 'INTEGER', planner_failures: 'INTEGER NOT NULL DEFAULT 0' });
   // lineage: NULL = a plan drafted from chat; 'roadmap:<id>' = a plan drafted for that roadmap. Approving a plan
   // supersedes only earlier plans of the same lineage, so a chat plan and several roadmaps can run side by side.
-  ensureColumns(db, 'plans', { lineage: 'TEXT' });
+  ensureColumns(db, 'plans', { lineage: 'TEXT', base_sha: 'TEXT' });
   adoptLegacyPhases(db);
   migrateReviews(db);
   return db;

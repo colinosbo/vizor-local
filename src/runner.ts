@@ -5,13 +5,13 @@ import type { DB } from './db.js';
 import { getSetting, tx } from './db.js';
 import { emit } from './events.js';
 import { HeadMovedError, type Forge, type ForgeProvider } from './forge.js';
-import { allPaths, commitAll, ensureWorktree, hasUncommitted, push, revParse, taskChanges, updateFromBase } from './git.js';
+import { allPaths, commitAll, ensureWorktree, executionRemote, fetchBase, git, hasUncommitted, push, revParse, taskChanges, updateFromBase } from './git.js';
 import { evaluateMerge } from './merge.js';
 import { SUPERSEDED_HOLD } from './plan.js';
 import { auditAttempt } from './isolation/audit.js';
 import { removeAttemptSettings, writeAttemptSettings } from './isolation/settings.js';
 import { inScope, scopesOverlap } from './scope.js';
-import { DEFAULT_CI, IN_FLIGHT, isModelDefault, REQUIRED_CHECK, TRUSTED_WORKFLOW, taskMarker, type AttemptRow, type Check, type Project, type TaskRow } from './types.js';
+import { DEFAULT_CI, IN_FLIGHT, isModelDefault, REQUIRED_CHECK, TRUSTED_WORKFLOW, taskMarker, type AttemptRow, type Check, type Project, type PullRequest, type TaskRow } from './types.js';
 import { modelFor, type WorkerFactory, type WorkerHandle } from './workers.js';
 import { claudeUsageRetryAt } from './usage-limit.js';
 import { prDiff } from './review/diff.js';
@@ -24,6 +24,7 @@ export interface RunnerOpts {
   repairLimit?: number;      // CI and review repairs per task before holding
   localRetryLimit?: number;  // retries for a non-zero worker exit before publication
   infraRetryLimit?: number;  // CI infra errors retried without a repair
+  checkTimeoutMs?: number;
   timeoutMs?: number;        // bounded execution time per attempt
   afterMerge?: (projectId: string) => void; // e.g. fast-forward the owner's folder
   /**
@@ -75,6 +76,7 @@ export class Runner {
   private work = new Set<Promise<void>>();
   private timer?: NodeJS.Timeout;
   private ticking = false;
+  private nextPoll = new Map<string, number>();
   private lastErr = new Map<string, string>();
   /** `${taskId}:${headSha}` of reviews running in this process: at most one review per task and SHA. */
   private reviewing = new Set<string>();
@@ -84,7 +86,7 @@ export class Runner {
 
   constructor(public db: DB, forge: Forge | ForgeProvider, public workers: WorkerFactory, opts: RunnerOpts) {
     const reviewer = opts.reviewer ?? (workers.name === 'claude-code' ? new ClaudeReviewerFactory() : new FakeReviewerFactory({}));
-    this.o = { repairLimit: 2, localRetryLimit: 1, infraRetryLimit: 2, timeoutMs: 20 * 60_000, afterMerge: () => {}, ...opts, reviewer };
+    this.o = { repairLimit: 2, localRetryLimit: 1, infraRetryLimit: 2, checkTimeoutMs: 30 * 60_000, timeoutMs: 20 * 60_000, afterMerge: () => {}, ...opts, reviewer };
     this.f = typeof forge === 'function' ? forge : () => forge;
   }
 
@@ -118,6 +120,7 @@ export class Runner {
   private block(t: TaskRow, reason: string) {
     if (this.isCancelled(t.id)) return; // an owner cancellation is final; late results never revive the task
     this.setTask(t.id, { status: 'blocked', hold_reason: reason });
+    this.nextPoll.delete(t.id);
     this.ev(t, 'task_blocked', { reason });
   }
 
@@ -134,6 +137,7 @@ export class Runner {
     this.ticking = true;
     try {
       this.processChecks();
+      this.resumeDuePublications();
       this.guard('promote', '', null, () => this.promote());
       let claimed: { attemptId: string }[] = [];
       this.guard('claim', '', null, () => { claimed = this.claim(); });
@@ -150,12 +154,45 @@ export class Runner {
       const t = this.task(a.task_id);
       if (a.status === 'exited') { // exit result was durably recorded; resume the publish pipeline (idempotent)
         this.ev(t, 'recovery_resume_publish', {}, a.id);
-        this.track(this.finishAttempt(a.id));
+        this.resumePublish(t, a.id);
       } else if (isAlive(a.pid)) { // still running from a previous runner: observe, never relaunch
         this.ev(t, 'recovery_observing_live_process', { pid: a.pid }, a.id);
         const iv = setInterval(() => { if (!isAlive(a.pid)) { clearInterval(iv); this.reconcileDead(a); } }, 1000);
       } else this.reconcileDead(a);
     }
+  }
+
+  private resumePublish(t: TaskRow, id: string) {
+    this.track(this.finishAttempt(id).catch((e: unknown) => this.publishFailed(t, id, e)));
+  }
+
+  private publishFailed(t: TaskRow, id: string, error: unknown) {
+    const attempt = this.attempt(id);
+    const reason = errText(error);
+    const retries = attempt.publish_retries ?? 0;
+    const temporary = /timed? ?out|etimedout|econnreset|rate limit|could not resolve host|connection (reset|refused)|temporarily unavailable|http 5[0-9]{2}/i.test(reason);
+    const due = temporary && retries < 2 ? Date.now() + 15_000 * (retries + 1) : null;
+    this.setAttempt(id, { status: 'publish_failed', reason, publish_retry_at: due, publish_retries: retries, ended_at: 1 });
+    this.block(this.task(t.id), 'publish failed: ' + reason + (due ? '; Vizor will retry publication automatically' : ''));
+    if (due) this.ev(t, 'publish_retry_scheduled', { retryAt: due }, id);
+  }
+
+  private resumeDuePublications(now = Date.now()) {
+    const due = this.db.prepare(`SELECT a.id, a.task_id FROM attempts a JOIN tasks t ON t.id=a.task_id
+      JOIN projects p ON t.project_id=p.id JOIN plans pl ON pl.id=t.plan_id
+      WHERE a.status='publish_failed' AND a.publish_retry_at<=? AND t.status='blocked' AND p.paused=0 AND pl.status='approved'`)
+      .all(now) as { id: string; task_id: string }[];
+    for (const a of due) this.retryPublication(this.task(a.task_id), a.id);
+  }
+
+  private retryPublication(t: TaskRow, id: string) {
+    tx(this.db, () => {
+      const attempt = this.attempt(id);
+      this.setAttempt(id, { status: 'exited', publish_retry_at: null, publish_retries: (attempt.publish_retries ?? 0) + 1 });
+      this.setTask(t.id, { status: 'running', hold_reason: null });
+      this.ev(t, 'task_retry_requested', { stage: 'publication' }, id);
+    });
+    this.resumePublish(t, id);
   }
 
   private reconcileDead(a: AttemptRow) {
@@ -183,21 +220,109 @@ export class Runner {
   }
 
   // ---------- CI results ----------
-  processChecks() {
+  processChecks(now = Date.now()) {
     const tasks = this.db.prepare("SELECT * FROM tasks WHERE status IN ('waiting_ci','merging')").all() as unknown as TaskRow[];
-    for (const t of tasks) this.guard('checks:' + t.id, t.project_id, t.id, () => {
-      const forge = this.f(t.project_id);
-      const sha = t.status === 'merging' ? t.merge_sha! : t.head_sha!;
-      for (const c of forge.checksFor(sha)) if (c.conclusion !== 'pending') this.handleCheck(t.id, c);
-      const cur = this.task(t.id);
-      if (cur.status === 'waiting_ci') {
-        const checks = forge.checksFor(cur.head_sha!).filter((c) => c.name === REQUIRED_CHECK && c.conclusion !== 'infra_error');
-        if (checks.length && checks.every((c) => c.conclusion === 'success')) this.tryMerge(cur);
-        const all = forge.checksFor(cur.head_sha!);
-        if (all.length && all.every((c) => c.conclusion === 'failure')) // already handled, nothing new will run
-          this.block(cur, `no new commit since CI failed on ${cur.head_sha!.slice(0, 8)}; read the worker's last message in Run, then Retry`);
+    for (const t of tasks) {
+      if ((this.nextPoll.get(t.id) ?? 0) > now) continue;
+      try {
+        this.pollAttempt(t, now);
+        if ((this.nextPoll.get(t.id) ?? 0) <= now) this.nextPoll.delete(t.id);
+        if (!this.nextPoll.has(t.id) && this.project(t.project_id).forge_kind === 'github' && ['waiting_ci', 'merging'].includes(this.task(t.id).status)) {
+          this.nextPoll.set(t.id, now + 10_000);
+        }
+      } catch (e) {
+        this.nextPoll.set(t.id, now + 15_000);
+        this.waitForCheck(t, 'forge unavailable while checking: ' + errText(e), now);
       }
-    });
+    }
+  }
+
+  private waitForCheck(t: TaskRow, reason: string, now: number) {
+    const current = this.task(t.id);
+    if (current.status !== 'waiting_ci' && current.status !== 'merging') return;
+    if (current.hold_reason !== reason) {
+      this.setTask(t.id, { hold_reason: reason });
+      this.ev(t, 'check_waiting', { reason });
+    }
+    const since = current.check_wait_since ?? now;
+    if (current.check_wait_since == null) this.setTask(t.id, { check_wait_since: since });
+    if (now - since >= this.o.checkTimeoutMs) {
+      this.block(current, 'check wait expired: ' + reason);
+    }
+  }
+
+  private adoptMergedPr(t: TaskRow, forge: Forge, observed?: PullRequest | null): boolean {
+    if (!t.pr_number || !t.head_sha || t.merge_intent_sha !== t.head_sha) return false;
+    const p = this.project(t.project_id);
+    const pr = observed === undefined ? forge.getPr(t.pr_number) : observed;
+    if (pr?.state !== 'merged' || !pr.mergeSha || pr.headSha !== t.head_sha || pr.branch !== t.branch ||
+        pr.base !== p.base_branch || !pr.body.includes(taskMarker(t.id))) return false;
+    const plan = this.db.prepare('SELECT status FROM plans WHERE id=?').get(t.plan_id) as { status: string } | undefined;
+    const override = plan?.status === 'superseded' && this.db.prepare(
+      "SELECT 1 FROM events WHERE task_id=? AND type='owner_override_merge' AND json_extract(data,'$.headSha')=?"
+    ).get(t.id, t.head_sha);
+    if (plan?.status !== 'approved' && !override) return false;
+    this.setTask(t.id, { status: 'merging', merge_sha: pr.mergeSha, hold_reason: null, pending_repair: null, check_wait_since: null, infra_retry_count: 0 });
+    this.ev(t, 'recovery_adopted_merge', { pr: pr.number, mergeSha: pr.mergeSha });
+    return true;
+  }
+
+  private pollAttempt(t: TaskRow, now: number) {
+    const forge = this.f(t.project_id);
+    if (t.status === 'waiting_ci' && t.pending_update_sha) {
+      this.resumeBranchUpdate(t, forge);
+      t = this.task(t.id);
+    }
+    if (t.status === 'waiting_ci' && t.pr_number) {
+      const pr = forge.getPr(t.pr_number);
+      if (this.adoptMergedPr(t, forge, pr)) {
+        this.pollAttempt(this.task(t.id), now);
+        return;
+      }
+      if (!pr || pr.state !== 'open') return this.block(t, 'merge held: PR is ' + (pr?.state ?? 'missing'));
+      if (pr.headSha !== t.head_sha) return this.block(t, 'merge held: PR head moved; restore the expected branch or create a replacement task');
+    }
+    const sha = t.status === 'merging' ? t.verification_sha ?? t.merge_sha : t.head_sha;
+    if (!sha) return this.block(t, 'check state lost its commit; inspect the pull request before retrying');
+    const project = this.project(t.project_id);
+    const checkName = project.forge_kind === 'github' ? project.github_check || 'ci' : REQUIRED_CHECK;
+    const checks = forge.checksFor(sha).filter((c) => c.sha === sha && c.name === REQUIRED_CHECK);
+    if (checks.some((c) => c.workflow_ref !== TRUSTED_WORKFLOW)) return this.block(t, 'check source mismatch for ' + checkName);
+    if (!checks.length) {
+      if (project.forge_kind !== 'github') forge.triggerCi(sha);
+      return this.waitForCheck(t, 'waiting for ' + checkName + ' on ' + sha.slice(0, 8), now);
+    }
+    if (checks.some((c) => c.conclusion === 'pending')) {
+      return this.waitForCheck(t, checkName + ' running on ' + sha.slice(0, 8), now);
+    }
+    const ordered = checks.sort((a, b) => a.id - b.id);
+    const latest = (t.status === 'merging' ? ordered : ordered.filter((c) => c.conclusion !== 'infra_error')).at(-1) ?? ordered.at(-1)!;
+    if (t.status === 'waiting_ci' && new Set(checks.filter((c) => c.conclusion !== 'infra_error').map((c) => c.conclusion)).size > 1) {
+      return this.block(t, 'conflicting results for ' + checkName + ' on ' + sha.slice(0, 8));
+    }
+    if (latest.conclusion === 'infra_error' && project.forge_kind === 'github') {
+      if (this.db.prepare('SELECT 1 FROM processed_checks WHERE task_id=? AND check_id=?').get(t.id, latest.id)) {
+        return this.waitForCheck(t, 'waiting for a retry of ' + checkName + ' on ' + sha.slice(0, 8), now);
+      }
+      if (t.infra_retry_count < this.o.infraRetryLimit && forge.rerunCi?.(latest)) {
+        this.db.prepare('INSERT OR IGNORE INTO processed_checks(check_id,task_id) VALUES (?,?)').run(latest.id, t.id);
+        this.setTask(t.id, { infra_retry_count: t.infra_retry_count + 1 });
+        this.ev(t, 'ci_infra_retry', { check: latest.id, sha });
+        return;
+      }
+      return this.block(t, 'GitHub check infrastructure failed on ' + sha.slice(0, 8) + '; rerun ' + checkName + ' in Actions, then Retry');
+    }
+    // A previously processed red merge check can be superseded by a successful rerun on the same SHA.
+    const handled = this.handleCheck(t.id, latest);
+    const cur = this.task(t.id);
+    if (cur.status === 'waiting_ci' && latest.conclusion === 'success') this.tryMerge(cur, checks);
+    if (cur.status === 'waiting_ci' && latest.conclusion === 'failure' && handled === 'duplicate') {
+      this.block(cur, 'no new commit since CI failed on ' + sha.slice(0, 8) + '; inspect the last repair in Run');
+    } else if ((cur.status === 'merging' || cur.status === 'waiting_ci') && latest.conclusion === 'infra_error' && handled === 'duplicate') {
+      this.waitForCheck(cur, 'waiting for a retry of ' + checkName + ' on ' + sha.slice(0, 8), now);
+    } else if (cur.status === 'merging' && latest.conclusion === 'failure' && handled === 'duplicate') {
+      this.block(cur, 'post-merge check failure on ' + sha.slice(0, 8) + '; rerun verification or fix main before releasing dependent tasks');
+    }
   }
 
   /** Idempotent: duplicate deliveries and superseded results are ignored. Public for tests. */
@@ -217,10 +342,10 @@ export class Runner {
           this.db.prepare('SELECT 1 FROM attempts WHERE task_id=? AND repair_key=?').get(t.id, repairKey(t.id, c))) return 'duplicate';
     }
     if (t.status === 'merging') {
-      if (c.sha !== t.merge_sha) return 'superseded';
+      if (c.sha !== (t.verification_sha ?? t.merge_sha)) return 'superseded';
       if (c.conclusion === 'success') {
         this.setTask(t.id, { status: 'merged', hold_reason: null });
-        this.ev(t, 'task_merged', { mergeSha: t.merge_sha, postMergeCheck: c.id });
+        this.ev(t, 'task_merged', { mergeSha: t.merge_sha, verifiedSha: c.sha, postMergeCheck: c.id });
         try { this.o.afterMerge(t.project_id); } catch { /* never let a folder sync break the merge pipeline */ }
       } else if (c.conclusion === 'infra_error' && t.infra_retry_count < this.o.infraRetryLimit) {
         this.setTask(t.id, { infra_retry_count: t.infra_retry_count + 1 });
@@ -250,18 +375,20 @@ export class Runner {
   }
 
   // ---------- merge ----------
-  private tryMerge(t: TaskRow) {
+  private tryMerge(t: TaskRow, checks?: Check[]) {
     if (this.task(t.id).status !== 'waiting_ci') return; // cancelled (or otherwise moved on) since it was read
     const p = this.project(t.project_id);
     const forge = this.f(t.project_id);
-    const d = evaluateMerge(this.db, forge, t, p);
+    const d = evaluateMerge(this.db, forge, t, p, { checks });
     if (d.eligible) {
       // Report gate: review and record the exact head, but never wait for it. (Block gate: the review already passed.)
       this.startReview(t, p);
       try {
         this.squashMerge(t, forge, d.headSha!);
       } catch (e) {
-        this.ev(t, 'merge_retry', { error: String(e), headMoved: e instanceof HeadMovedError });
+        this.ev(t, 'merge_retry', { error: errText(e), headMoved: e instanceof HeadMovedError });
+        this.nextPoll.set(t.id, Date.now() + 15_000);
+        this.waitForCheck(t, 'merge refused: ' + errText(e), Date.now());
       }
       return;
     }
@@ -296,7 +423,7 @@ export class Runner {
   private async runReview(t: TaskRow, p: Project, sha: string, pr: number): Promise<void> {
     let result: ReviewResult;
     try {
-      const baseRef = `origin/${p.base_branch}`;
+      const baseRef = fetchBase(p.repo_path, p.base_branch, executionRemote(p));
       const { diff, changedFiles } = await prDiff(p.repo_path, baseRef, sha);
       result = await this.o.reviewer.review({ projectId: p.id, taskId: t.id, prNumber: pr, headSha: sha, repoPath: p.repo_path,
         baseRef, diff, changedFiles, acceptance: t.acceptance });
@@ -320,7 +447,7 @@ export class Runner {
     putReview(this.db, { projectId, taskId, prNumber: pr, headSha: sha, status: r.status, findings, model: r.model });
     this.ev(t, 'review_completed', { headSha: sha, status: r.status, model: r.model, findings: findings.length,
       ...(r.status === 'failed' ? { error: r.error } : {}) });
-    if (t.status === 'waiting_ci' && t.head_sha === sha) this.tryMerge(t); // act on the result now, not next tick
+    if (t.status === 'waiting_ci' && t.head_sha === sha && getReviewGate(this.db, projectId) === 'block') this.tryMerge(t); // act on the result now, not next tick
   }
 
   /** review_blocked in block mode: send the findings back to the worker, sharing the CI repair limit. */
@@ -345,25 +472,46 @@ export class Runner {
    * On success the task enters 'merging' and the post-merge check decides 'merged'.
    */
   private squashMerge(t: TaskRow, forge: Forge, headSha: string): string {
-    const sha = forge.merge(t.pr_number!, headSha);
-    this.setTask(t.id, { status: 'merging', merge_sha: sha, hold_reason: null });
-    const check = forge.triggerCi(sha); // verify the merged commit before releasing dependents
-    this.ev(t, 'pr_merged', { pr: t.pr_number, head: headSha, mergeSha: sha, postMergeCheck: check });
+    this.setTask(t.id, { merge_intent_sha: headSha });
+    let sha: string;
+    try {
+      sha = forge.merge(t.pr_number!, headSha);
+    } catch (e) {
+      if (e instanceof HeadMovedError) this.setTask(t.id, { merge_intent_sha: t.merge_intent_sha ?? null });
+      throw e;
+    }
+    this.setTask(t.id, { status: 'merging', merge_sha: sha, hold_reason: null, check_wait_since: null, infra_retry_count: 0 });
+    this.ev(t, 'pr_merged', { pr: t.pr_number, head: headSha, mergeSha: sha });
+    // Polling also starts a missing local check after an interruption.
+    forge.triggerCi(sha);
     return sha;
   }
 
   private controlledUpdate(t: TaskRow) {
     const p = this.project(t.project_id);
     const wt = t.worktree ?? join(this.o.worktreesDir, t.id);
-    ensureWorktree(p.repo_path, wt, t.branch, p.base_branch);
-    const r = updateFromBase(wt, p.base_branch);
+    const remote = executionRemote(p);
+    ensureWorktree(p.repo_path, wt, t.branch, p.base_branch, remote);
+    const r = updateFromBase(wt, p.base_branch, remote);
     if (!r.ok) return this.block(t, `conflict with ${p.base_branch} in ${r.conflicts.join(', ')}; resolution may need out-of-scope edits`);
-    const out = allPaths(taskChanges(wt, p.base_branch)).filter((f) => !inScope(f, JSON.parse(t.write_scope)));
+    const out = allPaths(taskChanges(wt, p.base_branch, remote)).filter((f) => !inScope(f, JSON.parse(t.write_scope)));
     if (out.length) return this.block(t, `update produced out-of-scope changes: ${out.join(', ')}`);
-    push(wt, t.branch);
     const head = revParse(wt, 'HEAD')!;
-    this.setTask(t.id, { head_sha: head, worktree: wt });
-    this.f(t.project_id).notifyPush(t.branch); // fresh CI on the new head; old green check cannot approve it
+    this.setTask(t.id, { pending_update_sha: head, worktree: wt });
+    this.resumeBranchUpdate(this.task(t.id), this.f(t.project_id));
+  }
+
+  private resumeBranchUpdate(t: TaskRow, forge: Forge) {
+    const p = this.project(t.project_id);
+    const head = t.pending_update_sha!;
+    const pr = forge.getPr(t.pr_number!);
+    if (pr?.headSha !== head) {
+      if (pr?.state !== 'open' || pr.headSha !== t.head_sha || !t.worktree || revParse(t.worktree, 'HEAD') !== head) {
+        throw new Error('cannot safely resume the branch update; inspect the task worktree and PR head');
+      }
+      push(t.worktree, t.branch, executionRemote(p));
+    }
+    this.setTask(t.id, { head_sha: head, pending_update_sha: null, hold_reason: null, check_wait_since: null, infra_retry_count: 0 });
     this.ev(t, 'branch_updated_from_base', { head });
   }
 
@@ -454,7 +602,10 @@ export class Runner {
           if (idx === -1) continue;
           // A project whose forge cannot be reached gets no new work (nothing could be published).
           let baseSha: string | null;
-          try { baseSha = this.f(pid).baseSha(proj.base_branch); }
+          try {
+            baseSha = this.f(pid).baseSha(proj.base_branch);
+            if (!baseSha) throw new Error('base branch ' + proj.base_branch + ' could not be resolved');
+          }
           catch (e) {
             const msg = String((e as Error).message ?? e).slice(0, 200);
             const reason = msg.startsWith('forge unavailable') ? msg : 'forge unavailable: ' + msg;
@@ -532,9 +683,19 @@ export class Runner {
   private async runAttempt(attemptId: string, a: AttemptRow, t: TaskRow, p: Project, iso: { deniedPaths: string[] }): Promise<void> {
     try {
       const wt = t.worktree ?? join(this.o.worktreesDir, t.id);
-      const { created, baseSha } = ensureWorktree(p.repo_path, wt, t.branch, p.base_branch);
+      const remote = executionRemote(p);
+      const { created, baseSha } = ensureWorktree(p.repo_path, wt, t.branch, p.base_branch, remote);
+      if (!created && !hasUncommitted(wt)) {
+        const update = updateFromBase(wt, p.base_branch, remote);
+        if (!update.ok) {
+          this.setAttempt(a.id, { status: 'failed', reason: 'base conflict', ended_at: 1 });
+          return this.block(t, 'conflict with ' + p.base_branch + ' in ' + update.conflicts.join(', ') + '; resolve in the task worktree, then Retry');
+        }
+      }
+      const actualBase = git(wt, ['merge-base', 'HEAD', baseSha]);
+      this.db.prepare('UPDATE attempts SET base_sha=? WHERE id=?').run(actualBase, attemptId);
       this.setTask(t.id, { worktree: wt });
-      this.ev(t, 'worktree_ready', { path: wt, branch: t.branch, created, baseSha }, attemptId);
+      this.ev(t, 'worktree_ready', { path: wt, branch: t.branch, created, baseSha: actualBase }, attemptId);
       const n = (this.db.prepare('SELECT COUNT(*) AS n FROM attempts WHERE task_id=?').get(t.id) as { n: number }).n;
       const model = modelFor(t, a.kind, isModelDefault(p.worker_model) ? p.worker_model : 'auto');
       this.db.prepare('UPDATE attempts SET model=? WHERE id=?').run(model, attemptId);
@@ -562,6 +723,10 @@ export class Runner {
       this.setTask(t.id, { last_session_id: res.sessionId ?? a.session_id });
       await this.finishAttempt(attemptId);
     } catch (e) {
+      const exited = this.attempt(attemptId);
+      if (exited.status === 'exited' && exited.exit_code === 0) {
+        return this.publishFailed(t, attemptId, e);
+      }
       this.setAttempt(attemptId, { status: 'failed', reason: String(e).slice(0, 500), ended_at: 1 });
       this.block(this.task(t.id), 'runner error: ' + String(e).slice(0, 300));
     }
@@ -599,9 +764,15 @@ export class Runner {
       this.setAttempt(a.id, { status: 'failed', ended_at: 1 });
       return this.block(t, `worker exited ${a.exit_code}${a.reason ? ` (${a.reason})` : ''}`);
     }
+    const plan = this.db.prepare('SELECT status FROM plans WHERE id=?').get(t.plan_id) as { status: string } | undefined;
+    if (plan?.status !== 'approved') {
+      this.setAttempt(a.id, { status: 'succeeded', ended_at: 1 });
+      return this.block(t, SUPERSEDED_HOLD);
+    }
     const wt = t.worktree!;
     commitAll(wt, `${t.title}\n\n${taskMarker(t.id)}`);
-    const changes = taskChanges(wt, p.base_branch);
+    const remote = executionRemote(p);
+    const changes = taskChanges(wt, p.base_branch, remote);
     const scope = JSON.parse(t.write_scope) as string[];
     const out = allPaths(changes).filter((f) => !inScope(f, scope));
     if (changes.length === 0) { this.setAttempt(a.id, { status: 'failed', reason: 'no changes', ended_at: 1 }); return this.block(t, 'worker produced no changes'); }
@@ -610,7 +781,7 @@ export class Runner {
       return this.block(t, `out-of-scope changes not published: ${out.join(', ')} (allowed: ${scope.join(', ')}); needs a new plan version`);
     }
     const forge = this.f(t.project_id);
-    push(wt, t.branch);
+    push(wt, t.branch, remote);
     const head = revParse(wt, 'HEAD')!;
     if (a.kind === 'repair' && parsePendingRepair(t.pending_repair)?.kind === 'review' && head === t.head_sha) {
       // The blocked review is for this exact commit; without a new commit nothing would change.
@@ -627,8 +798,8 @@ export class Runner {
     if (!pr) {
       pr = forge.createPr({ branch: t.branch, base: p.base_branch, title: t.title,
         body: `${t.acceptance}\n\nScope: ${scope.join(', ')}\n\n${taskMarker(t.id)}` });
-    } else if (forge.checksFor(head).length === 0) forge.notifyPush(t.branch);
-    this.setTask(t.id, { status: 'waiting_ci', pr_number: pr.number, head_sha: head, pending_repair: null, hold_reason: null });
+    } else if (p.forge_kind !== 'github' && forge.checksFor(head).length === 0) forge.notifyPush(t.branch);
+    this.setTask(t.id, { status: 'waiting_ci', pr_number: pr.number, head_sha: head, pending_repair: null, hold_reason: null, check_wait_since: null, infra_retry_count: 0 });
     this.setAttempt(a.id, { status: 'succeeded', ended_at: 1 });
     this.ev(t, 'pr_published', { pr: pr.number, head, created, files: allPaths(changes) }, a.id);
   }
@@ -682,19 +853,70 @@ export class Runner {
     return { task: this.task(t.id), dependents };
   }
 
+  /** Owner attests that a follow-up landed. CI must pass on that exact base before unblocking dependents. */
+  verifyCurrentBase(taskId: string) {
+    const t = this.task(taskId);
+    if (t?.status !== 'blocked' || !t.merge_sha) throw new Error('Only held tasks whose PR merged can verify a follow-up');
+    const p = this.project(t.project_id);
+    const sha = fetchBase(p.repo_path, p.base_branch, executionRemote(p));
+    if (sha === t.merge_sha || git(p.repo_path, ['merge-base', t.merge_sha, sha], { allowFail: true }) !== t.merge_sha) {
+      throw new Error('The current base must contain the original merge and a follow-up commit');
+    }
+    this.nextPoll.delete(taskId);
+    this.setTask(t.id, { status: 'merging', verification_sha: sha, hold_reason: null, check_wait_since: null, infra_retry_count: 0 });
+    this.ev(t, 'merge_followup_verification', { mergeSha: t.merge_sha, sha });
+  }
+
   retry(taskId: string) {
     const t = this.task(taskId);
     if (t.status !== 'blocked') throw new Error(`task is ${t.status}, not blocked`);
     if (t.usage_retry_at !== null && t.usage_retry_at > Date.now()) {
       throw new Error('This task retries automatically after Claude’s usage reset');
     }
-    const toCi = t.pr_number && t.pending_repair === null
-      && (t.hold_reason?.startsWith('merge held') || t.hold_reason?.startsWith(REVIEW_USAGE_HOLD));
+    this.nextPoll.delete(taskId);
+    if (t.merge_sha) {
+      const verifySha = t.verification_sha ?? t.merge_sha;
+      const forge = this.f(t.project_id);
+      const checks = forge.checksFor(verifySha).filter((c) => c.name === REQUIRED_CHECK);
+      this.setTask(t.id, { status: 'merging', hold_reason: null, infra_retry_count: 0, check_wait_since: null });
+      if (!checks.some((c) => c.conclusion === 'pending') && checks.at(-1)?.conclusion !== 'success') {
+        try {
+          const latest = checks.filter((c) => c.workflow_ref === TRUSTED_WORKFLOW).sort((a, b) => a.id - b.id).at(-1);
+          if (this.project(t.project_id).forge_kind === 'github' && latest) {
+            if (forge.rerunCi?.(latest)) this.nextPoll.set(t.id, Date.now() + 15_000);
+          } else forge.triggerCi(verifySha);
+        } catch (e) {
+          this.ev(t, 'runner_error', { error: errText(e), stage: 'merge_verification' });
+        }
+      }
+      this.ev(t, 'task_retry_requested', { stage: 'merge_verification', sha: verifySha });
+      return;
+    }
+    if (t.pr_number && t.merge_intent_sha && this.adoptMergedPr(t, this.f(t.project_id))) return;
+    if (t.hold_reason?.startsWith('publish failed:')) {
+      const attempt = this.db.prepare("SELECT id FROM attempts WHERE task_id=? AND status='publish_failed' ORDER BY rowid DESC LIMIT 1")
+        .get(t.id) as { id: string } | undefined;
+      if (attempt) {
+        this.retryPublication(t, attempt.id);
+        return;
+      }
+    }
+    const toCi = t.pending_update_sha || t.pr_number && t.pending_repair === null
+      && (t.hold_reason?.startsWith('merge held') || t.hold_reason?.startsWith(REVIEW_USAGE_HOLD) ||
+        /^(check wait expired|check source mismatch|conflicting results|GitHub check infrastructure)/.test(t.hold_reason ?? ''));
     if (t.pr_number && t.head_sha && t.hold_reason?.startsWith(REVIEW_FAILED_HOLD)) {
       // Retrying a failed review reviews the same head again; merge.ts still needs it to pass.
       putReview(this.db, { projectId: t.project_id, taskId: t.id, prNumber: t.pr_number, headSha: t.head_sha, status: 'pending', findings: [], model: '' });
     }
-    this.setTask(t.id, { status: toCi ? 'waiting_ci' : 'ready', hold_reason: null, usage_retry_at: null, local_retry_count: 0 });
+    if (toCi && t.head_sha && t.hold_reason?.startsWith('GitHub check infrastructure')) {
+      const forge = this.f(t.project_id);
+      const latest = forge.checksFor(t.head_sha).filter((c) => c.name === REQUIRED_CHECK && c.workflow_ref === TRUSTED_WORKFLOW)
+        .sort((a, b) => a.id - b.id).at(-1);
+      if (latest?.conclusion === 'infra_error' && forge.rerunCi?.(latest)) {
+        this.db.prepare('INSERT OR IGNORE INTO processed_checks(check_id,task_id) VALUES (?,?)').run(latest.id, t.id);
+      }
+    }
+    this.setTask(t.id, { status: toCi ? 'waiting_ci' : 'ready', hold_reason: null, check_wait_since: null, usage_retry_at: null, local_retry_count: 0 });
     this.ev(t, 'task_retry_requested');
   }
 

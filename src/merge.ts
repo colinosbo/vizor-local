@@ -4,7 +4,7 @@ import { allPaths } from './git.js';
 import { SUPERSEDED_HOLD } from './plan.js';
 import { getReview, getReviewGate, hasBlockingFinding, type ReviewFinding, type ReviewRow } from './review/store.js';
 import { inScope } from './scope.js';
-import { REQUIRED_CHECK, TRUSTED_WORKFLOW, taskMarker, type Project, type TaskRow } from './types.js';
+import { type Check, REQUIRED_CHECK, TRUSTED_WORKFLOW, taskMarker, type Project, type TaskRow } from './types.js';
 
 export type HoldCode =
   | 'plan_not_approved' | 'no_pr' | 'pr_missing' | 'pr_not_open' | 'wrong_base' | 'not_bot_branch' | 'unbound_pr'
@@ -31,6 +31,7 @@ export interface MergeOptions {
    * Every other check is unchanged.
    */
   ownerOverride?: boolean;
+  checks?: Check[];
 }
 
 type ReviewOutcome = { hold: HoldCode; detail: string } | { overridden?: ReviewFinding[] };
@@ -85,7 +86,7 @@ export function evaluateMerge(db: DB, forge: Forge, task: TaskRow, project: Proj
   const out = allPaths(files).filter((p) => !inScope(p, scope));
   if (out.length) return hold('out_of_scope', `changed outside scope: ${out.join(', ')}`);
 
-  const checks = forge.checksFor(pr.headSha).filter((c) => c.name === REQUIRED_CHECK);
+  const checks = (opts.checks ?? forge.checksFor(pr.headSha)).filter((c) => c.sha === pr.headSha && c.name === REQUIRED_CHECK);
   if (checks.length === 0) return hold('no_check', `no ${REQUIRED_CHECK} on ${pr.headSha.slice(0, 8)}`);
   if (checks.some((c) => c.workflow_ref !== TRUSTED_WORKFLOW)) return hold('untrusted_check', 'check from untrusted workflow');
   if (checks.some((c) => c.conclusion === 'pending')) return hold('check_pending', 'CI running');
@@ -93,13 +94,13 @@ export function evaluateMerge(db: DB, forge: Forge, task: TaskRow, project: Proj
   if (concl.size > 1) return hold('ambiguous_checks', `conflicting results on ${pr.headSha.slice(0, 8)}`);
   if (!concl.has('success')) return hold('check_failed', `${REQUIRED_CHECK} not green on ${pr.headSha.slice(0, 8)}`);
 
+  const fresh = forge.isUpToDate(pr.number);
+  if (fresh === null) return hold('freshness_unknown', 'could not compute branch freshness');
+  if (!fresh) return hold('stale', 'branch behind ' + project.base_branch);
+
   // pr.headSha was verified equal to task.head_sha above, so this reviews exactly what would be merged.
   const review = reviewOutcome(db, project.id, task.id, pr.headSha, opts.ownerOverride === true);
   if ('hold' in review) return hold(review.hold, review.detail);
-
-  const fresh = forge.isUpToDate(pr.number);
-  if (fresh === null) return hold('freshness_unknown', 'could not compute branch freshness');
-  if (!fresh) return hold('stale', `branch behind ${project.base_branch}`);
 
   const decision: MergeDecision = { eligible: true, holds, headSha: pr.headSha };
   if (review.overridden) decision.overriddenFindings = review.overridden;

@@ -21,6 +21,8 @@ export interface Forge {
   checksFor(sha: string): Check[];
   notifyPush(branch: string): void;
   triggerCi(sha: string): number;
+  /** Start a provider-specific rerun when the check carries enough context. */
+  rerunCi?(check: Check): boolean;
   /** Squash-merge guarded by the exact verified head SHA. */
   merge(n: number, expectedHeadSha: string): string;
   /** Close an open PR without merging; the branch is kept. Optional: forges without it leave the PR open. */
@@ -52,6 +54,7 @@ export class LocalForge implements Forge {
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS prs (number INTEGER PRIMARY KEY AUTOINCREMENT, branch TEXT, base TEXT, title TEXT, body TEXT,
         state TEXT DEFAULT 'open', merge_sha TEXT);
+      CREATE TABLE IF NOT EXISTS merge_intents (pr INTEGER PRIMARY KEY, head TEXT NOT NULL, candidate TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS checks (id INTEGER PRIMARY KEY AUTOINCREMENT, sha TEXT, name TEXT, conclusion TEXT,
         workflow_ref TEXT, log TEXT DEFAULT '');`);
     // A check still 'pending' from an earlier process can never finish: report it as an infra error so the runner re-runs it.
@@ -62,7 +65,14 @@ export class LocalForge implements Forge {
 
   private row(r: Record<string, unknown> | undefined): PullRequest | null {
     if (!r) return null;
-    const headSha = r.state === 'open' ? revParse(this.bare, `refs/heads/${r.branch}`) : (revParse(this.bare, `refs/heads/${r.branch}`) ?? '');
+    const intent = this.db.prepare('SELECT head, candidate FROM merge_intents WHERE pr=?').get(r.number as number) as
+      { head: string; candidate: string } | undefined;
+    if (r.state === 'open' && intent && this.baseSha(r.base as string) &&
+        git(this.bare, ['merge-base', intent.candidate, 'refs/heads/' + r.base], { allowFail: true }) === intent.candidate) {
+      this.db.prepare("UPDATE prs SET state='merged', merge_sha=? WHERE number=?").run(intent.candidate, r.number as number);
+      r = { ...r, state: 'merged', merge_sha: intent.candidate };
+    }
+    const headSha = r.state === 'merged' && intent ? intent.head : r.state === 'open' ? revParse(this.bare, `refs/heads/${r.branch}`) : (revParse(this.bare, `refs/heads/${r.branch}`) ?? '');
     return { number: r.number as number, branch: r.branch as string, base: r.base as string, headSha: headSha ?? '',
       state: r.state as PullRequest['state'], title: r.title as string, body: r.body as string, mergeSha: (r.merge_sha as string) ?? null };
   }
@@ -145,10 +155,13 @@ export class LocalForge implements Forge {
     const dir = mkdtempSync(join(tmpdir(), 'local-merge-'));
     try {
       git(tmpdir(), ['clone', '--quiet', '--branch', pr.base, this.bare, dir]);
+      const currentBase = git(dir, ['rev-parse', 'HEAD']);
+      if (git(dir, ['merge-base', currentBase, expectedHeadSha]) !== currentBase) throw new Error('base moved before the squash merge');
       git(dir, ['merge', '--squash', '--quiet', expectedHeadSha]); // guard: merge the SHA, not the branch name
       git(dir, ['commit', '--quiet', '-m', `${pr.title} (#${n})`]);
-      git(dir, ['push', '--quiet', 'origin', `HEAD:refs/heads/${pr.base}`]); // rejected if base moved (non-fast-forward)
       const sha = git(dir, ['rev-parse', 'HEAD']);
+      this.db.prepare('INSERT OR REPLACE INTO merge_intents(pr, head, candidate) VALUES (?,?,?)').run(n, expectedHeadSha, sha);
+      git(dir, ['push', '--quiet', 'origin', 'HEAD:refs/heads/' + pr.base]); // rejected if base moved
       this.db.prepare("UPDATE prs SET state='merged', merge_sha=? WHERE number=?").run(sha, n);
       return sha;
     } finally { rmSync(dir, { recursive: true, force: true }); }

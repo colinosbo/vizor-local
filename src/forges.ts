@@ -6,7 +6,7 @@ import { LocalForge, type Forge } from './forge.js';
 import { createChecksFor } from './github/checks.js';
 import { GitHubForge } from './github/forge.js';
 import { createGh, ghAuthStatus, type GhOptions } from './github/gh.js';
-import { git } from './git.js';
+import { executionRemote, git } from './git.js';
 import { DEFAULT_GITHUB_CHECK, isGithubRepo, type ForgeStatus, type Project } from './types.js';
 
 /**
@@ -108,7 +108,9 @@ export class ForgeRegistry {
     const cached = this.forges.get(p.id);
     if (cached?.kind === 'github' && cached.key === key) return cached.forge;
     const gh = createGh(this.ghOpts);
-    const forge = new GitHubForge({ repo, repoPath: p.repo_path, gh, checksFor: createChecksFor({ repo, checkName: check, gh }) });
+    const remote = executionRemote(p);
+    const remoteUrl = remote === 'origin' ? git(p.repo_path, ['remote', 'get-url', 'origin']) : remote;
+    const forge = new GitHubForge({ repo, repoPath: p.repo_path, remoteUrl, gh, checksFor: createChecksFor({ repo, checkName: check, gh }) });
     this.put(p.id, { kind: 'github', key, forge });
     return forge;
   }

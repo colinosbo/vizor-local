@@ -75,7 +75,11 @@ export interface TaskRow {
   status: TaskStatus; hold_reason: string | null; branch: string; worktree: string | null;
   pr_number: number | null; head_sha: string | null; merge_sha: string | null;
   repair_count: number; local_retry_count: number; infra_retry_count: number;
-  pending_repair: string | null; last_session_id: string | null;
+  pending_repair: string | null;
+  pending_update_sha?: string | null;
+  merge_intent_sha?: string | null;
+  verification_sha?: string | null;
+  check_wait_since?: number | null; last_session_id: string | null;
   usage_retry_at: number | null;  // UTC epoch ms for a provider quota hold
   model?: ModelChoice | null;     // planner's pick for this task
   model_why?: string | null;
@@ -87,6 +91,8 @@ export interface AttemptRow {
   base_sha: string | null; pid: number | null; exit_code: number | null; reason: string | null;
   ended_at: string | null;
   model?: ModelChoice | null;     // model that ran this attempt; null for attempts from older builds
+  publish_retry_at?: number | null;
+  publish_retries?: number;
   security?: string | null;       // JSON AttemptSecurity from the post-attempt audit; null until the attempt ends
 }
 
@@ -94,6 +100,7 @@ export interface Check {
   id: number; sha: string; name: string;
   conclusion: 'pending' | 'success' | 'failure' | 'infra_error';
   workflow_ref: string; log: string;
+  actionsRunId?: number;
 }
 
 export interface PullRequest {
